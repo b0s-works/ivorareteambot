@@ -12,6 +12,7 @@ import (
 
 var db *gorm.DB
 var taskTitle string
+var currentTask Task
 
 type attachment struct {
 	Text string `json:"text"`
@@ -21,14 +22,14 @@ type message struct {
 	Attachments []attachment `json:"attachments"`
 }
 type Task struct {
-	gorm.Model
-	task_id int
-	task_title string
-	task_bidding_done int
+	TaskID          int
+	TaskTitle       string
+	TaskBiddingDone int
 }
 
 func main() {
 	dbInit()
+	defer db.Close()
 
 	badRouting()
 	serverStart()
@@ -63,7 +64,6 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 	switch(r.URL.Path) {
 
 	case "/":
-
 	case "/mytaskhoursbidwillbe":
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
@@ -77,7 +77,6 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sendMsg(fmt.Sprintf("Ваша оценка для задачи «%s»: %v; Спасибо!", taskTitle, hoursBid), w)
-
 	case "/sethoursbidsubject":
 		if (cmdText == "") {
 			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
@@ -85,14 +84,21 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unfound
 		var task Task
-		db.FirstOrCreate(&task, Task{task_title: cmdText})
+		db.FirstOrCreate(&task, &Task{TaskTitle: cmdText})
 		fmt.Println(task)
+
+		if task.TaskBiddingDone != 0 {
+			sendMsg(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText), w)
+			return
+		}
+
+		currentTask = task
 
 		/*if (db_isTaskExists(cmdText)) {
 			sendMsg(fmt.Sprintf("Задача «%s» уже существует!", cmdText), w)
 		}*/
 
-		sendMsg(fmt.Sprintf("Задача «%s» задана для совершения ставок оценки времени!", cmdText), w)
+		sendMsg(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText), w)
 	}
 }
 
@@ -106,8 +112,9 @@ func getSlackCommandStringValue(r *http.Request) string {
 }
 
 func dbInit() {
-	db, err := gorm.Open("mysql", "root:example@tcp(192.168.99.100:3306)/ivorareteambot_db?charset=utf8&parseTime=True&loc=Local")
-	defer db.Close()
+	var err error
+	db, err = gorm.Open("mysql", "root:example@tcp(192.168.99.100:3306)/ivorareteambot_db?charset=utf8&parseTime=True&loc=Local")
+	db.LogMode(true)
 
 	checkError(err)
 }
@@ -116,7 +123,7 @@ func respondJSON(message message, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 
 	msgJSON, _ := json.Marshal(message)
-	fmt.Fprint(w, "%+v\n", string(msgJSON))
+	fmt.Fprintf(w, "%+v\n", string(msgJSON))
 }
 func sendMsg(msg string, responseWriter http.ResponseWriter) {
 	respondJSON(message{Text: msg}, responseWriter)
