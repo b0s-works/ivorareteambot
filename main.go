@@ -123,7 +123,7 @@ func respondJSON(message message, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 
 	msgJSON, _ := json.Marshal(message)
-	fmt.Fprintf(w, "%+v\n", string(msgJSON))
+	fmt.Fprint(w, string(msgJSON))
 }
 func sendMsg(msg string, responseWriter http.ResponseWriter) {
 	respondJSON(message{Text: msg}, responseWriter)
