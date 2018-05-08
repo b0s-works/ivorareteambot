@@ -1,11 +1,24 @@
-version: '3.1'
+version: '3.2'
 
 services:
-
   db:
-    image: mysql:5
+    image: mysql:5.7
     restart: always
+    volumes:
+      - "./sql/tables-schemas.sql:/docker-entrypoint-initdb.d/tables-schemas.sql"
+#      - "./db:/var/lib/mysql"
+#      - type: volume
+#        source: db-data
+#        target: /var/lib/mysql
+#        volume:
+#          nocopy: true
+#      - "./config/my.cnf:/etc/mysql.cnf"
+
     environment:
       MYSQL_ROOT_PASSWORD: example
+      MYSQL_PASSWORD: example
+      MYSQL_DATABASE: ivorareteambot_db
     ports:
       - "3306:3306"
+#volumes:
+#  db-data:

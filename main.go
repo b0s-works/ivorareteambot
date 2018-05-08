@@ -26,10 +26,35 @@ type Task struct {
 	TaskTitle       string
 	TaskBiddingDone int
 }
+type LastTask struct {
+	ID     int
+	TaskID int
+}
+type SlackToken struct {
+	slackToken string
+}
+
+func (LastTask) TableName() string {
+	return "last_task"
+}
+
+type TaskHoursBidAndMember struct {
+	TaskID int
+	MemberIdentity string
+	MemberTimeBid int64
+	MemberNick string
+}
 
 func main() {
 	dbInit()
 	defer db.Close()
+	// Unfound
+	var lastTask LastTask
+	db.First(&lastTask, &LastTask{ID: 1})
+	if (lastTask.TaskID > 0) {
+		db.First(&currentTask, &Task{TaskID: lastTask.TaskID})
+		fmt.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", currentTask)
+	}
 
 	badRouting()
 	serverStart()
@@ -56,8 +81,18 @@ func badRouting() {
 	http.HandleFunc("/sethoursbidsubject", HandleRouter)
 }
 func HandleRouter(w http.ResponseWriter, r *http.Request) {
-	log.Println("r.URL.Path:", r.URL.Path)
+	log.Println("r.URL.Path:", r.URL.Path, getSlackToken(r))
 
+	var slackToken SlackToken
+	if db.Where("slack_token = ?", getSlackToken(r)).First(&slackToken).RecordNotFound() {
+		sendMsg(
+			fmt.Sprintf(
+				"Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства <<%s>> добавить секретный токен в базу данных бота.",
+				getSlackPostFieldValue("team_domain", r), ), w)
+		return
+	}
+
+	fmt.Println("slackToken: ", slackToken);
 	cmdText := getSlackCommandStringValue(r)
 	log.Println("cmdText:", cmdText)
 
@@ -65,18 +100,34 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 
 	case "/":
 	case "/mytaskhoursbidwillbe":
+		fmt.Println(r.Body)
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
 			sendMsg(fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s)", cmdText), w)
 			return
 		}
 
-		if taskTitle == "" {
+		if currentTask.TaskTitle == "" {
 			sendMsg_PleaseSpecifyTheTask(w)
 			return
 		}
 
-		sendMsg(fmt.Sprintf("Ваша оценка для задачи «%s»: %v; Спасибо!", taskTitle, hoursBid), w)
+		//checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
+
+		UserID := getSlackPostFieldValue("user_id", r)
+		UserName := getSlackPostFieldValue("user_name", r)
+
+		var newMemberBidData = TaskHoursBidAndMember{
+			TaskID: currentTask.TaskID,
+			MemberNick: UserName,
+			MemberTimeBid: hoursBid,
+		}
+
+		checkDBError(db.Where(&TaskHoursBidAndMember{MemberIdentity: UserID}).
+			Attrs(&newMemberBidData).
+			FirstOrCreate(&newMemberBidData).Error, w)
+
+		sendMsg(fmt.Sprintf("Ваша оценка для задачи «%s»: %v; Спасибо!", currentTask.TaskTitle, hoursBid), w)
 	case "/sethoursbidsubject":
 		if (cmdText == "") {
 			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
@@ -84,7 +135,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		}
 		// Unfound
 		var task Task
-		db.FirstOrCreate(&task, &Task{TaskTitle: cmdText})
+		checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
 		fmt.Println(task)
 
 		if task.TaskBiddingDone != 0 {
@@ -97,18 +148,62 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		/*if (db_isTaskExists(cmdText)) {
 			sendMsg(fmt.Sprintf("Задача «%s» уже существует!", cmdText), w)
 		}*/
+		db.Where(&LastTask{ID: 1}).
+			Attrs(&LastTask{TaskID: task.TaskID}).
+			FirstOrCreate(&LastTask{ID: 1, TaskID: task.TaskID})
 
 		sendMsg(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText), w)
+	case "/listtaskbids":
+		if (cmdText == "") {
+			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
+			return
+		}
+		// Unfound
+		var task Task
+		db.First(&Task{TaskTitle: cmdText});
+
+		checkDBError(db.Where(&TaskHoursBidAndMember{Taskt: UserID}).Error, w)
+		fmt.Println(task)
+
+	}
+	if task.TaskBiddingDone != 0 {
+		sendMsg(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText), w)
+		return
+	}
+
+	currentTask = task
+
+	/*if (db_isTaskExists(cmdText)) {
+		sendMsg(fmt.Sprintf("Задача «%s» уже существует!", cmdText), w)
+	}*/
+	db.Where(&LastTask{ID: 1}).
+		Attrs(&LastTask{TaskID: task.TaskID}).
+		FirstOrCreate(&LastTask{ID: 1, TaskID: task.TaskID})
+
+	sendMsg(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText), w)
 	}
 }
 
+func getSlackToken(r *http.Request) string {
+	return getSlackValueFromPostOrGet("token", r)
+}
 func getSlackCommandStringValue(r *http.Request) string {
-	if  r.Method == "POST" {
-		r.ParseForm()
-		fmt.Println(r.PostFormValue("text"), r)
-		return r.PostFormValue("text")
+	return getSlackValueFromPostOrGet("text", r)
+}
+
+func getSlackValueFromPostOrGet(value string, r *http.Request) string {
+	if r.Method == "POST" {
+		return getSlackPostFieldValue(value, r)
 	}
-	return r.URL.Query().Get("text")
+	return getSlackGetQueryParameterValue(value, r)
+}
+
+func getSlackPostFieldValue(value string, r *http.Request) string {
+	r.ParseForm()
+	return r.PostFormValue(value)
+}
+func getSlackGetQueryParameterValue(value string, r *http.Request) string {
+	return r.URL.Query().Get(value)
 }
 
 func dbInit() {
@@ -129,8 +224,15 @@ func sendMsg(msg string, responseWriter http.ResponseWriter) {
 	respondJSON(message{Text: msg}, responseWriter)
 }
 
-func checkError( error error ) {
+func checkError(error error) {
 	if error != nil {
 		panic(error)
+	}
+}
+func checkDBError(error error, w http.ResponseWriter) {
+	if error != nil {
+		sendMsg(fmt.Sprintf("Возникла ошибка при запросе в базу данных.\nОшибка: %s", error), w)
+		//panic(error)
+		return
 	}
 }
