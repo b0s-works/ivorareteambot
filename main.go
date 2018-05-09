@@ -22,7 +22,7 @@ type message struct {
 	Attachments []attachment `json:"attachments"`
 }
 type Task struct {
-	TaskID          int
+	TaskID          int `gorm:"primary_key:yes"`
 	TaskTitle       string
 	TaskBiddingDone int
 }
@@ -39,6 +39,7 @@ func (LastTask) TableName() string {
 }
 
 type TaskHoursBidAndMember struct {
+	ID             int
 	TaskID         int
 	MemberIdentity string
 	MemberTimeBid  int64
@@ -77,8 +78,11 @@ func serverStart() {
 
 func badRouting() {
 	http.HandleFunc("/", HandleRouter)
-	http.HandleFunc("/mytaskhoursbidwillbe", HandleRouter)
-	http.HandleFunc("/sethoursbidsubject", HandleRouter)
+	http.HandleFunc("/tbb_myhoursbidwillbe", HandleRouter)
+	http.HandleFunc("/tbb_setbidtask", HandleRouter)
+	http.HandleFunc("/tbb_listtaskbids", HandleRouter)
+	http.HandleFunc("/tbb_list", HandleRouter)
+	http.HandleFunc("/tbb_removetask", HandleRouter)
 }
 func HandleRouter(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
@@ -89,7 +93,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 	if db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken).RecordNotFound() {
 		sendMsg(
 			fmt.Sprintf(
-				"Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства <<%s>> добавить секретный токен в базу данных бота.",
+				"Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства «%s» добавить секретный токен в базу данных бота.",
 				getSlackPostFieldValue("team_domain", r), ), w)
 		return
 	}
@@ -101,11 +105,11 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 	switch(r.URL.Path) {
 
 	case "/":
-	case "/mytaskhoursbidwillbe":
+	case "/tbb_myhoursbidwillbe":
 		fmt.Println(r.Body)
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
-			sendMsg(fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s)", cmdText), w)
+			sendMsg(fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText), w)
 			return
 		}
 
@@ -119,43 +123,61 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		UserID := getSlackPostFieldValue("user_id", r)
 		UserName := getSlackPostFieldValue("user_name", r)
 
-		var newMemberBidData = TaskHoursBidAndMember{
-			TaskID:        currentTask.TaskID,
-			MemberNick:    UserName,
-			MemberTimeBid: hoursBid,
+		var taskHoursBidAndMember TaskHoursBidAndMember
+		db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", currentTask.TaskID, UserID)
+		fmt.Printf("taskHoursBidAndMember: %v %+v\n", taskHoursBidAndMember.TaskID > 0, taskHoursBidAndMember)
+		if taskHoursBidAndMember.TaskID > 0 {
+			fmt.Println("We have to make update:")
+
+			oldBid := taskHoursBidAndMember.MemberTimeBid
+
+			taskHoursBidAndMember.MemberNick = UserName
+			taskHoursBidAndMember.MemberTimeBid = hoursBid
+
+			updateResult := db.Save(&taskHoursBidAndMember)
+			if updateResult.RowsAffected == 1 {
+				sendMsgVariadic(w, "Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", currentTask.TaskTitle, oldBid, hoursBid)
+			} else if updateResult.Error != nil {
+				sendMsgVariadic(w, "При обновлении оценки по задаче «%s» произошла ошибка:\n", updateResult.Error)
+			}
+			return
 		}
-
-		checkDBError(db.Where(&TaskHoursBidAndMember{MemberIdentity: UserID}).
-			Attrs(&newMemberBidData).
-			FirstOrCreate(&newMemberBidData).Error, w)
-
-		sendMsg(fmt.Sprintf("Ваша оценка для задачи «%s»: %v; Спасибо!", currentTask.TaskTitle, hoursBid), w)
-	case "/sethoursbidsubject":
+		//fmt.Printf( "New record data\n - %+v",  )
+		createResult := db.Create(&TaskHoursBidAndMember{TaskID: currentTask.TaskID, MemberIdentity: UserID, MemberNick: UserName, MemberTimeBid: hoursBid})
+		if createResult.RowsAffected == 1 {
+			sendMsgVariadic(w, "Ваша оценка для задачи «%s»: %v\nСпасибо!", currentTask.TaskTitle, hoursBid)
+		} else if createResult.Error != nil {
+			sendMsgVariadic(w, "При добавлении оценки по задаче «%s» произошла ошибка:\n", createResult.Error)
+		}
+	case "/tbb_setbidtask":
 		if (cmdText == "") {
-			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
+			sendMsgVariadic(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
 			return
 		}
 		// Unfound
-		var task Task
-		checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
-		fmt.Println(task)
-
-		if task.TaskBiddingDone != 0 {
-			sendMsg(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText), w)
+		var task = Task{TaskTitle: cmdText}
+		if err := db.FirstOrCreate(&task, "task_title = ?", cmdText).Error; err != nil {
+			sendMsgVariadic(w, "При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)
 			return
 		}
+
+		fmt.Printf("First or create task result:\n%+v", task)
+
+		if task.TaskBiddingDone != 0 {
+			sendMsgVariadic(w, "Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)
+			return
+		}
+
+		db.Save(&LastTask{ID: 1, TaskID: task.TaskID})
 
 		currentTask = task
 
 		/*if (db_isTaskExists(cmdText)) {
 			sendMsg(fmt.Sprintf("Задача «%s» уже существует!", cmdText), w)
 		}*/
-		db.Where(&LastTask{ID: 1}).
-			Attrs(&LastTask{TaskID: task.TaskID}).
-			FirstOrCreate(&LastTask{ID: 1, TaskID: task.TaskID})
 
 		sendMsg(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText), w)
-	case "/taskbidsbot_listbids":
+	case "/tbb_listtaskbids":
 		if cmdText == "" {
 			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
 			return
@@ -187,6 +209,47 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fmt.Println(task)
+
+	case "/tbb_list":
+		// Unfound
+		var tasks []Task
+
+		if db.Select("task_id, task_title, task_bidding_done").Find(&tasks).RecordNotFound() {
+			sendMsgVariadic(w, "Список задач пуст.")
+			return
+		}
+		var TaskBiddingDoneString string
+		for _, task := range tasks {
+			TaskBiddingDoneString = "открыто"
+			if task.TaskBiddingDone > 0 {
+				TaskBiddingDoneString = "совершено"
+			}
+			fmt.Fprintf(w, "%v. «%s» (голосование %s)", task.TaskID, task.TaskTitle, TaskBiddingDoneString)
+		}
+	case "/tbb_removetask":
+		if (cmdText == "") {
+			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
+			return
+		}
+		// Unfound
+		var task Task
+		if db.First(&task, &Task{TaskTitle: cmdText}).RecordNotFound() {
+			sendMsgVariadic(w, "Задача «%s» не найдена.", cmdText)
+			return
+		}
+
+		if db.Delete(Task{}, "task_id = ?", task.TaskID).RowsAffected == 1 {
+			sendMsgVariadic(w, "Задача «%s» удалена.", cmdText)
+			if db.Delete(TaskHoursBidAndMember{}, "task_id = ?", task.TaskID).RowsAffected > 0 {
+				sendMsgVariadic(w, "Так же удалены все связанные с ней ставки участников.")
+			}
+		}
+
+		var deletableTaskID = task.TaskID
+		if deletableTaskID == currentTask.TaskID {
+			currentTask = Task{}
+			sendMsgVariadic(w, "Задача «%s» так же снята с голосования.", cmdText)
+		}
 	}
 }
 
@@ -227,6 +290,9 @@ func respondJSON(message message, w http.ResponseWriter) {
 }
 func sendMsg(msg string, responseWriter http.ResponseWriter) {
 	respondJSON(message{Text: msg}, responseWriter)
+}
+func sendMsgVariadic(responseWriter http.ResponseWriter, msg string, s ...interface{}) {
+	respondJSON(message{Text: fmt.Sprintf(msg, s...)}, responseWriter)
 }
 
 func checkError(error error) {
