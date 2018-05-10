@@ -75,6 +75,16 @@ func serverStart() {
 	fmt.Printf("listening on %v\n", httpPort)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", httpPort), nil))
 }
+func sendMsgOnRwsAffctdOrErr(w http.ResponseWriter, rslt *gorm.DB, scsMsg string, scsMsgData []interface{}, errMsg string, errMsgData []interface{}) bool {
+	if rslt.RowsAffected == 1 {
+		sendMsg(w, scsMsg, scsMsgData...)
+		return true
+	}
+	if rslt.Error != nil {
+		sendMsg(w, errMsg, errMsgData)
+	}
+	return false
+}
 
 func badRouting() {
 	http.HandleFunc("/", HandleRouter)
@@ -91,10 +101,9 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 
 	var slackToken SlackToken
 	if db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken).RecordNotFound() {
-		sendMsg(
-			fmt.Sprintf(
-				"Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства «%s» добавить секретный токен в базу данных бота.",
-				getSlackPostFieldValue("team_domain", r), ), w)
+		sendMsg(w, "Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства «%s» добавить секретный токен в базу данных бота.",
+			getSlackPostFieldValue("team_domain", r),
+		)
 		return
 	}
 
@@ -109,7 +118,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		fmt.Println(r.Body)
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
-			sendMsg(fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText), w)
+			sendMsg(w, "Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText)
 			return
 		}
 
@@ -120,8 +129,8 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 
 		//checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
 
-		UserID := getSlackPostFieldValue("user_id", r)
-		UserName := getSlackPostFieldValue("user_name", r)
+		UserID := getSlackValueFromPostOrGet("user_id", r)
+		UserName := getSlackValueFromPostOrGet("user_name", r)
 
 		var taskHoursBidAndMember TaskHoursBidAndMember
 		db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", currentTask.TaskID, UserID)
@@ -135,36 +144,33 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 			taskHoursBidAndMember.MemberTimeBid = hoursBid
 
 			updateResult := db.Save(&taskHoursBidAndMember)
-			if updateResult.RowsAffected == 1 {
-				sendMsgVariadic(w, "Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", currentTask.TaskTitle, oldBid, hoursBid)
-			} else if updateResult.Error != nil {
-				sendMsgVariadic(w, "При обновлении оценки по задаче «%s» произошла ошибка:\n", updateResult.Error)
-			}
-			return
+			sendMsgOnRwsAffctdOrErr(w, updateResult,
+				"Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", []interface{}{currentTask.TaskTitle, oldBid, hoursBid},
+				"При обновлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{updateResult.Error},
+			)
 		}
 		//fmt.Printf( "New record data\n - %+v",  )
 		createResult := db.Create(&TaskHoursBidAndMember{TaskID: currentTask.TaskID, MemberIdentity: UserID, MemberNick: UserName, MemberTimeBid: hoursBid})
-		if createResult.RowsAffected == 1 {
-			sendMsgVariadic(w, "Ваша оценка для задачи «%s»: %v\nСпасибо!", currentTask.TaskTitle, hoursBid)
-		} else if createResult.Error != nil {
-			sendMsgVariadic(w, "При добавлении оценки по задаче «%s» произошла ошибка:\n", createResult.Error)
-		}
+		sendMsgOnRwsAffctdOrErr(w, createResult,
+			"Ваша оценка для задачи «%s»: %v\nСпасибо!", []interface{}{currentTask.TaskTitle, hoursBid},
+			"При добавлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{createResult.Error},
+		)
 	case "/tbb_setbidtask":
 		if (cmdText == "") {
-			sendMsgVariadic(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
 			return
 		}
 		// Unfound
 		var task = Task{TaskTitle: cmdText}
 		if err := db.FirstOrCreate(&task, "task_title = ?", cmdText).Error; err != nil {
-			sendMsgVariadic(w, "При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)
+			sendMsg(w, "При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)
 			return
 		}
 
 		fmt.Printf("First or create task result:\n%+v", task)
 
 		if task.TaskBiddingDone != 0 {
-			sendMsgVariadic(w, "Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)
+			sendMsg(w, "Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)
 			return
 		}
 
@@ -173,20 +179,20 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		currentTask = task
 
 		/*if (db_isTaskExists(cmdText)) {
-			sendMsg(fmt.Sprintf("Задача «%s» уже существует!", cmdText), w)
+			sendMsg(w, "Задача «%s» уже существует!", cmdText)
 		}*/
 
-		sendMsg(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText), w)
+		sendMsg(w, "Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText)
 	case "/tbb_listtaskbids":
 		if cmdText == "" {
-			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
 			return
 		}
 		// Unfound
 		var task Task
 		db.Where(&Task{TaskTitle: cmdText}).First(&task)
 		if task.TaskID == 0 {
-			sendMsg(fmt.Sprintf("Задача с точным названием «%s» не найдена.", cmdText), w)
+			sendMsg(w, "Задача с точным названием «%s» не найдена.", cmdText)
 			return
 		}
 		var membersAndBids []TaskHoursBidAndMember
@@ -202,10 +208,10 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 				)
 				fmt.Println("memberAndBid:", memberAndBid);
 			}
-			sendMsg(fmt.Sprintf("Для задачи «%s» участниками были сделаны следующие ставки:\n%s", cmdText, resultMembersAndBidsList), w)
+			sendMsg(w, "Для задачи «%s» участниками были сделаны следующие ставки:\n%s", cmdText, resultMembersAndBidsList)
 			return
 		} else {
-			sendMsg(fmt.Sprintf("Ставок времени для задачи «%s» не сделано.", cmdText), w)
+			sendMsg(w, "Ставок времени для задачи «%s» не сделано.", cmdText)
 			return
 		}
 		fmt.Println(task)
@@ -215,7 +221,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		var tasks []Task
 
 		if db.Select("task_id, task_title, task_bidding_done").Find(&tasks).RecordNotFound() {
-			sendMsgVariadic(w, "Список задач пуст.")
+			sendMsg(w, "Список задач пуст.")
 			return
 		}
 		var TaskBiddingDoneString string
@@ -228,27 +234,27 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/tbb_removetask":
 		if (cmdText == "") {
-			sendMsg(fmt.Sprintf("Укажите Название задачи например: «%s Название задачи».", r.URL.Path), w)
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
 			return
 		}
 		// Unfound
 		var task Task
 		if db.First(&task, &Task{TaskTitle: cmdText}).RecordNotFound() {
-			sendMsgVariadic(w, "Задача «%s» не найдена.", cmdText)
+			sendMsg(w, "Задача «%s» не найдена.", cmdText)
 			return
 		}
 
 		if db.Delete(Task{}, "task_id = ?", task.TaskID).RowsAffected == 1 {
-			sendMsgVariadic(w, "Задача «%s» удалена.", cmdText)
+			sendMsg(w, "Задача «%s» удалена.", cmdText)
 			if db.Delete(TaskHoursBidAndMember{}, "task_id = ?", task.TaskID).RowsAffected > 0 {
-				sendMsgVariadic(w, "Так же удалены все связанные с ней ставки участников.")
+				sendMsg(w, "Так же удалены все связанные с ней ставки участников.")
 			}
 		}
 
 		var deletableTaskID = task.TaskID
 		if deletableTaskID == currentTask.TaskID {
 			currentTask = Task{}
-			sendMsgVariadic(w, "Задача «%s» так же снята с голосования.", cmdText)
+			sendMsg(w, "Задача «%s» так же снята с голосования.", cmdText)
 		}
 	}
 }
@@ -288,10 +294,7 @@ func respondJSON(message message, w http.ResponseWriter) {
 	msgJSON, _ := json.Marshal(message)
 	fmt.Fprint(w, string(msgJSON))
 }
-func sendMsg(msg string, responseWriter http.ResponseWriter) {
-	respondJSON(message{Text: msg}, responseWriter)
-}
-func sendMsgVariadic(responseWriter http.ResponseWriter, msg string, s ...interface{}) {
+func sendMsg(responseWriter http.ResponseWriter, msg string, s ...interface{}) {
 	respondJSON(message{Text: fmt.Sprintf(msg, s...)}, responseWriter)
 }
 
@@ -302,7 +305,7 @@ func checkError(error error) {
 }
 func checkDBError(error error, w http.ResponseWriter) {
 	if error != nil {
-		sendMsg(fmt.Sprintf("Возникла ошибка при запросе в базу данных.\nОшибка: %s", error), w)
+		sendMsg(w, "Возникла ошибка при запросе в базу данных.\nОшибка: %s", error)
 		//panic(error)
 		return
 	}
