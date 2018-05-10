@@ -2,13 +2,52 @@ package main
 
 import (
 	"encoding/json"
-	"net/http"
 	"fmt"
-	"log"
-	"strconv"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
+	"log"
+	"net/http"
+	"strconv"
+	"ivorareteambot/app"
+	"ivorareteambot/controller"
 )
+
+
+func main() {
+	db := openDB()
+	defer db.Close()
+
+	a := app.New(db)
+	c := controller.New(
+		a,
+		//TODO move it to config.yml
+		"someSlackToken",
+	)
+	c.InitRouters()
+
+
+	// TODO move it to Application level
+	var lastTask LastTask
+	db.First(&lastTask, &LastTask{ID: 1})
+	if lastTask.TaskID > 0 {
+		db.First(&currentTask, &Task{TaskID: lastTask.TaskID})
+		fmt.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", currentTask)
+	}
+
+	serverStart()
+}
+
+func openDB() *gorm.DB {
+
+	//TODO move DB credentials to config.yml
+	db, err := gorm.Open("mysql", "root:example@tcp(192.168.99.100:3306)/ivorareteambot_db?charset=utf8&parseTime=True&loc=Local")
+	if err != nil {
+		panic(err)
+		return nil
+	}
+	db.LogMode(true)
+	return db
+}
 
 var db *gorm.DB
 var taskTitle string
@@ -21,6 +60,7 @@ type message struct {
 	Text        string       `json:"text"`
 	Attachments []attachment `json:"attachments"`
 }
+
 type Task struct {
 	TaskID          int `gorm:"primary_key:yes"`
 	TaskTitle       string
@@ -29,9 +69,6 @@ type Task struct {
 type LastTask struct {
 	ID     int
 	TaskID int
-}
-type SlackToken struct {
-	slackToken string
 }
 
 func (LastTask) TableName() string {
@@ -46,20 +83,7 @@ type TaskHoursBidAndMember struct {
 	MemberNick     string
 }
 
-func main() {
-	dbInit()
-	defer db.Close()
-	// Unfound
-	var lastTask LastTask
-	db.First(&lastTask, &LastTask{ID: 1})
-	if (lastTask.TaskID > 0) {
-		db.First(&currentTask, &Task{TaskID: lastTask.TaskID})
-		fmt.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", currentTask)
-	}
 
-	badRouting()
-	serverStart()
-}
 
 func sendMsg_PleaseSpecifyTheTask(w http.ResponseWriter) {
 	var msg message
@@ -69,6 +93,8 @@ func sendMsg_PleaseSpecifyTheTask(w http.ResponseWriter) {
 	respondJSON(msg, w)
 }
 
+
+//MOVE IT to main
 func serverStart() {
 	httpPort := 80
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -94,28 +120,15 @@ func badRouting() {
 	http.HandleFunc("/tbb_list", HandleRouter)
 	http.HandleFunc("/tbb_removetask", HandleRouter)
 }
-func HandleRouter(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	var slackTokenFromForm string = getSlackToken(r);
-	log.Println("r.URL.Path:", r.URL.Path, slackTokenFromForm)
 
-	var slackToken SlackToken
-	if db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken).RecordNotFound() {
-		sendMsg(w, "Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства «%s» добавить секретный токен в базу данных бота.",
-			getSlackPostFieldValue("team_domain", r),
-		)
-		return
-	}
 
-	fmt.Println("slackToken: ", slackToken);
-	cmdText := getSlackCommandStringValue(r)
-	log.Println("cmdText:", cmdText)
+func HandleRouter(w http.ResponseWriter, req *http.Request) {
 
-	switch(r.URL.Path) {
+	switch req.URL.Path {
 
 	case "/":
 	case "/tbb_myhoursbidwillbe":
-		fmt.Println(r.Body)
+		fmt.Println(req.Body)
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
 			sendMsg(w, "Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText)
@@ -129,8 +142,8 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 
 		//checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
 
-		UserID := getSlackValueFromPostOrGet("user_id", r)
-		UserName := getSlackValueFromPostOrGet("user_name", r)
+		UserID := getSlackValueFromPostOrGet("user_id", req)
+		UserName := getSlackValueFromPostOrGet("user_name", req)
 
 		var taskHoursBidAndMember TaskHoursBidAndMember
 		db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", currentTask.TaskID, UserID)
@@ -144,6 +157,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 			taskHoursBidAndMember.MemberTimeBid = hoursBid
 
 			updateResult := db.Save(&taskHoursBidAndMember)
+			respondMessage(fmt.Sprintf("Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", currentTask.TaskTitle, oldBid, hoursBid))
 			sendMsgOnRwsAffctdOrErr(w, updateResult,
 				"Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", []interface{}{currentTask.TaskTitle, oldBid, hoursBid},
 				"При обновлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{updateResult.Error},
@@ -156,8 +170,8 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 			"При добавлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{createResult.Error},
 		)
 	case "/tbb_setbidtask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+		if cmdText == "" {
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", req.URL.Path)
 			return
 		}
 		// Unfound
@@ -185,7 +199,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 		sendMsg(w, "Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText)
 	case "/tbb_listtaskbids":
 		if cmdText == "" {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", req.URL.Path)
 			return
 		}
 		// Unfound
@@ -206,7 +220,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 					memberAndBid.MemberNick,
 					memberAndBid.MemberIdentity,
 				)
-				fmt.Println("memberAndBid:", memberAndBid);
+				fmt.Println("memberAndBid:", memberAndBid)
 			}
 			sendMsg(w, "Для задачи «%s» участниками были сделаны следующие ставки:\n%s", cmdText, resultMembersAndBidsList)
 			return
@@ -233,8 +247,8 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "%v. «%s» (голосование %s)", task.TaskID, task.TaskTitle, TaskBiddingDoneString)
 		}
 	case "/tbb_removetask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+		if cmdText == "" {
+			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", req.URL.Path)
 			return
 		}
 		// Unfound
@@ -259,6 +273,7 @@ func HandleRouter(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+
 func getSlackToken(r *http.Request) string {
 	return getSlackValueFromPostOrGet("token", r)
 }
@@ -280,16 +295,8 @@ func getSlackGetQueryParameterValue(value string, r *http.Request) string {
 	return r.URL.Query().Get(value)
 }
 
-func dbInit() {
-	var err error
-	db, err = gorm.Open("mysql", "root:example@tcp(192.168.99.100:3306)/ivorareteambot_db?charset=utf8&parseTime=True&loc=Local")
-	db.LogMode(true)
-
-	checkError(err)
-}
-
 func respondJSON(message message, w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "app/json")
 
 	msgJSON, _ := json.Marshal(message)
 	fmt.Fprint(w, string(msgJSON))
