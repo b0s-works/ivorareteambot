@@ -5,10 +5,14 @@ import (
 	"net/http"
 	"fmt"
 	"log"
-	"strconv"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
+	"ivorareteambot/project/app"
+	"ivorareteambot/project/controller"
+	"github.com/jinzhu/configor"
 )
+
+const dbLoggingEnabled = true
 
 var db *gorm.DB
 var taskTitle string
@@ -46,19 +50,65 @@ type TaskHoursBidAndMember struct {
 	MemberNick     string
 }
 
-func main() {
-	dbInit()
-	defer db.Close()
-	// Unfound
-	var lastTask LastTask
-	db.First(&lastTask, &LastTask{ID: 1})
-	if (lastTask.TaskID > 0) {
-		db.First(&currentTask, &Task{TaskID: lastTask.TaskID})
-		fmt.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", currentTask)
-	}
+var dbConfig = struct {
+	APPName string `default:"ivorareteambot"`
 
+	DB struct {
+		Name     string
+		User     string `default:"root"`
+		Password string `required:"true" env:"example"`
+
+		Host      string `default:"127.0.0.1"`
+		Port      uint   `default:"3306"`
+		Charset   string `default:"utf8"`
+		ParseTime string `default:"true"`
+	}
+}{}
+var slackConfig = struct {
+	Token string `default:"someSlackToken"`
+}{}
+
+func main() {
+	configor.Load(&dbConfig, "config/database.yml")
+	fmt.Printf("config: %#v", dbConfig)
+
+	configor.Load(&slackConfig, "config/slack.yml")
+	fmt.Printf("config: %#v", slackConfig)
+
+	db, dbErr := openDB("mysql", dbConfig)
+	if dbErr != nil {
+		panic(dbErr)
+	}
+	defer db.Close()
+
+	a := app.New(db)
+	c := controller.New(
+		a,
+		slackConfig.Token,
+	)
+
+	c.InitRouters()
 	badRouting()
 	serverStart()
+}
+func openDB(dialect string, config interface{}) (*gorm.DB, error) {
+	var dsn = fmt.Sprintf(
+		"%s:%s@tcp(%s:%v)/%s?charset=%s&parseTime=%s&loc=Local",
+		config.DB.User,
+		config.DB.Password,
+		config.DB.Host,
+		config.DB.Port,
+		config.DB.Name,
+		config.DB.Charset,
+		config.DB.ParseTime,
+	)
+
+	fmt.Printf("dsn: %+v", dsn)
+
+	db, err := gorm.Open( dialect, dsn )
+	db.LogMode( dbLoggingEnabled )
+
+	return db, err
 }
 
 func sendMsg_PleaseSpecifyTheTask(w http.ResponseWriter) {
@@ -94,169 +144,23 @@ func badRouting() {
 	http.HandleFunc("/tbb_list", HandleRouter)
 	http.HandleFunc("/tbb_removetask", HandleRouter)
 }
-func HandleRouter(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	var slackTokenFromForm string = getSlackToken(r);
+func requestTokenAndSearchitInDb(w http.ResponseWriter, r *http.Request) SlackToken {
+	var slackTokenFromForm = getSlackToken(r)
 	log.Println("r.URL.Path:", r.URL.Path, slackTokenFromForm)
 
 	var slackToken SlackToken
-	if db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken).RecordNotFound() {
+	statement := db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken)
+	if statement.Error != nil {
+		sendMsg(w,
+			"Произошла ошибка при запросе токена из базы данных:\n%+v",
+			statement.Error,
+		)
+	} else if statement.RecordNotFound() {
 		sendMsg(w, "Токен этого рабочего пространства не найден в базе данных ivorareteambot. Попросите владельца рабочего пространства «%s» добавить секретный токен в базу данных бота.",
 			getSlackPostFieldValue("team_domain", r),
 		)
-		return
 	}
-
-	fmt.Println("slackToken: ", slackToken);
-	cmdText := getSlackCommandStringValue(r)
-	log.Println("cmdText:", cmdText)
-
-	switch(r.URL.Path) {
-
-	case "/":
-	case "/tbb_myhoursbidwillbe":
-		fmt.Println(r.Body)
-		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
-		if err != nil {
-			sendMsg(w, "Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText)
-			return
-		}
-
-		if currentTask.TaskTitle == "" {
-			sendMsg_PleaseSpecifyTheTask(w)
-			return
-		}
-
-		//checkDBError(db.FirstOrCreate(&task, &Task{TaskTitle: cmdText}).Error, w)
-
-		UserID := getSlackValueFromPostOrGet("user_id", r)
-		UserName := getSlackValueFromPostOrGet("user_name", r)
-
-		var taskHoursBidAndMember TaskHoursBidAndMember
-		db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", currentTask.TaskID, UserID)
-		fmt.Printf("taskHoursBidAndMember: %v %+v\n", taskHoursBidAndMember.TaskID > 0, taskHoursBidAndMember)
-		if taskHoursBidAndMember.TaskID > 0 {
-			fmt.Println("We have to make update:")
-
-			oldBid := taskHoursBidAndMember.MemberTimeBid
-
-			taskHoursBidAndMember.MemberNick = UserName
-			taskHoursBidAndMember.MemberTimeBid = hoursBid
-
-			updateResult := db.Save(&taskHoursBidAndMember)
-			sendMsgOnRwsAffctdOrErr(w, updateResult,
-				"Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", []interface{}{currentTask.TaskTitle, oldBid, hoursBid},
-				"При обновлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{updateResult.Error},
-			)
-		}
-		//fmt.Printf( "New record data\n - %+v",  )
-		createResult := db.Create(&TaskHoursBidAndMember{TaskID: currentTask.TaskID, MemberIdentity: UserID, MemberNick: UserName, MemberTimeBid: hoursBid})
-		sendMsgOnRwsAffctdOrErr(w, createResult,
-			"Ваша оценка для задачи «%s»: %v\nСпасибо!", []interface{}{currentTask.TaskTitle, hoursBid},
-			"При добавлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{createResult.Error},
-		)
-	case "/tbb_setbidtask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
-			return
-		}
-		// Unfound
-		var task = Task{TaskTitle: cmdText}
-		if err := db.FirstOrCreate(&task, "task_title = ?", cmdText).Error; err != nil {
-			sendMsg(w, "При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)
-			return
-		}
-
-		fmt.Printf("First or create task result:\n%+v", task)
-
-		if task.TaskBiddingDone != 0 {
-			sendMsg(w, "Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)
-			return
-		}
-
-		db.Save(&LastTask{ID: 1, TaskID: task.TaskID})
-
-		currentTask = task
-
-		/*if (db_isTaskExists(cmdText)) {
-			sendMsg(w, "Задача «%s» уже существует!", cmdText)
-		}*/
-
-		sendMsg(w, "Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText)
-	case "/tbb_listtaskbids":
-		if cmdText == "" {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
-			return
-		}
-		// Unfound
-		var task Task
-		db.Where(&Task{TaskTitle: cmdText}).First(&task)
-		if task.TaskID == 0 {
-			sendMsg(w, "Задача с точным названием «%s» не найдена.", cmdText)
-			return
-		}
-		var membersAndBids []TaskHoursBidAndMember
-		db.Where(&TaskHoursBidAndMember{TaskID: task.TaskID}).Find(&membersAndBids)
-		if len(membersAndBids) > 0 {
-			var resultMembersAndBidsList string
-			for _, memberAndBid := range membersAndBids {
-				resultMembersAndBidsList += fmt.Sprintf(
-					"%v - %s (%s)",
-					memberAndBid.MemberTimeBid,
-					memberAndBid.MemberNick,
-					memberAndBid.MemberIdentity,
-				)
-				fmt.Println("memberAndBid:", memberAndBid);
-			}
-			sendMsg(w, "Для задачи «%s» участниками были сделаны следующие ставки:\n%s", cmdText, resultMembersAndBidsList)
-			return
-		} else {
-			sendMsg(w, "Ставок времени для задачи «%s» не сделано.", cmdText)
-			return
-		}
-		fmt.Println(task)
-
-	case "/tbb_list":
-		// Unfound
-		var tasks []Task
-
-		if db.Select("task_id, task_title, task_bidding_done").Find(&tasks).RecordNotFound() {
-			sendMsg(w, "Список задач пуст.")
-			return
-		}
-		var TaskBiddingDoneString string
-		for _, task := range tasks {
-			TaskBiddingDoneString = "открыто"
-			if task.TaskBiddingDone > 0 {
-				TaskBiddingDoneString = "совершено"
-			}
-			fmt.Fprintf(w, "%v. «%s» (голосование %s)", task.TaskID, task.TaskTitle, TaskBiddingDoneString)
-		}
-	case "/tbb_removetask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
-			return
-		}
-		// Unfound
-		var task Task
-		if db.First(&task, &Task{TaskTitle: cmdText}).RecordNotFound() {
-			sendMsg(w, "Задача «%s» не найдена.", cmdText)
-			return
-		}
-
-		if db.Delete(Task{}, "task_id = ?", task.TaskID).RowsAffected == 1 {
-			sendMsg(w, "Задача «%s» удалена.", cmdText)
-			if db.Delete(TaskHoursBidAndMember{}, "task_id = ?", task.TaskID).RowsAffected > 0 {
-				sendMsg(w, "Так же удалены все связанные с ней ставки участников.")
-			}
-		}
-
-		var deletableTaskID = task.TaskID
-		if deletableTaskID == currentTask.TaskID {
-			currentTask = Task{}
-			sendMsg(w, "Задача «%s» так же снята с голосования.", cmdText)
-		}
-	}
+	return slackToken
 }
 
 func getSlackToken(r *http.Request) string {
@@ -278,14 +182,6 @@ func getSlackPostFieldValue(value string, r *http.Request) string {
 }
 func getSlackGetQueryParameterValue(value string, r *http.Request) string {
 	return r.URL.Query().Get(value)
-}
-
-func dbInit() {
-	var err error
-	db, err = gorm.Open("mysql", "root:example@tcp(192.168.99.100:3306)/ivorareteambot_db?charset=utf8&parseTime=True&loc=Local")
-	db.LogMode(true)
-
-	checkError(err)
 }
 
 func respondJSON(message message, w http.ResponseWriter) {
