@@ -13,11 +13,11 @@ COLLATE utf8mb4_general_ci
 COMMENT = 'Содержит оценки участников голосования и своего рода идентификаторы участников голосования';
 
 CREATE TABLE tasks (
-  task_id int(11) NOT NULL AUTO_INCREMENT,
-  task_title text NOT NULL,
-  task_bidding_done tinyint(1) DEFAULT 0,
-  PRIMARY KEY (task_id),
-  UNIQUE INDEX tasks_task_id_uindex (task_id)
+  id int(11) NOT NULL AUTO_INCREMENT,
+  title text NOT NULL,
+  bidding_done tinyint(1) DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE INDEX tasks_id_uindex (id)
 )
 ENGINE = INNODB
 CHARACTER SET utf8mb4

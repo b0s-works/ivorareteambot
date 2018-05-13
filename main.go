@@ -5,77 +5,27 @@ import (
 	"net/http"
 	"fmt"
 	"log"
+	"github.com/jinzhu/configor"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
-	"ivorareteambot/project/app"
-	"ivorareteambot/project/controller"
-	"github.com/jinzhu/configor"
+	"ivorareteambot/config"
+	"ivorareteambot/types"
+	"ivorareteambot/app"
+	"ivorareteambot/controller"
 )
 
 const dbLoggingEnabled = true
 
 var db *gorm.DB
 var taskTitle string
-var currentTask Task
+var currentTask types.Task
 
-type attachment struct {
-	Text string `json:"text"`
-}
-type message struct {
-	Text        string       `json:"text"`
-	Attachments []attachment `json:"attachments"`
-}
-type Task struct {
-	TaskID          int `gorm:"primary_key:yes"`
-	TaskTitle       string
-	TaskBiddingDone int
-}
-type LastTask struct {
-	ID     int
-	TaskID int
-}
-type SlackToken struct {
-	slackToken string
-}
 
-func (LastTask) TableName() string {
-	return "last_task"
-}
-
-type TaskHoursBidAndMember struct {
-	ID             int
-	TaskID         int
-	MemberIdentity string
-	MemberTimeBid  int64
-	MemberNick     string
-}
-
-var dbConfig = struct {
-	APPName string `default:"ivorareteambot"`
-
-	DB struct {
-		Name     string
-		User     string `default:"root"`
-		Password string `required:"true" env:"example"`
-
-		Host      string `default:"127.0.0.1"`
-		Port      uint   `default:"3306"`
-		Charset   string `default:"utf8"`
-		ParseTime string `default:"true"`
-	}
-}{}
-var slackConfig = struct {
-	Token string `default:"someSlackToken"`
-}{}
 
 func main() {
-	configor.Load(&dbConfig, "config/database.yml")
-	fmt.Printf("config: %#v", dbConfig)
+	config := config.GetConfig();
 
-	configor.Load(&slackConfig, "config/slack.yml")
-	fmt.Printf("config: %#v", slackConfig)
-
-	db, dbErr := openDB("mysql", dbConfig)
+	db, dbErr := openDB("mysql", config)
 	if dbErr != nil {
 		panic(dbErr)
 	}
@@ -84,14 +34,14 @@ func main() {
 	a := app.New(db)
 	c := controller.New(
 		a,
-		slackConfig.Token,
+		config.SlackToken,
 	)
 
 	c.InitRouters()
 	badRouting()
 	serverStart()
 }
-func openDB(dialect string, config interface{}) (*gorm.DB, error) {
+func openDB(dialect string, config config.Config) (*gorm.DB, error) {
 	var dsn = fmt.Sprintf(
 		"%s:%s@tcp(%s:%v)/%s?charset=%s&parseTime=%s&loc=Local",
 		config.DB.User,
@@ -112,9 +62,9 @@ func openDB(dialect string, config interface{}) (*gorm.DB, error) {
 }
 
 func sendMsg_PleaseSpecifyTheTask(w http.ResponseWriter) {
-	var msg message
+	var msg types.Message
 	msg.Text = "Зайдайте Название задачи для которой хотите провести командную оценку времени"
-	msg.Attachments = append(msg.Attachments, attachment{Text: "Задать Название задачи можно с помощью команды /setratingsubject"})
+	msg.Attachments = append(msg.Attachments, types.Attachment{Text: "Задать Название задачи можно с помощью команды /setratingsubject"})
 
 	respondJSON(msg, w)
 }
@@ -144,11 +94,11 @@ func badRouting() {
 	http.HandleFunc("/tbb_list", HandleRouter)
 	http.HandleFunc("/tbb_removetask", HandleRouter)
 }
-func requestTokenAndSearchitInDb(w http.ResponseWriter, r *http.Request) SlackToken {
+func requestTokenAndSearchitInDb(w http.ResponseWriter, r *http.Request) types.SlackToken {
 	var slackTokenFromForm = getSlackToken(r)
 	log.Println("r.URL.Path:", r.URL.Path, slackTokenFromForm)
 
-	var slackToken SlackToken
+	var slackToken types.SlackToken
 	statement := db.Where("slack_token = ?", slackTokenFromForm).First(&slackToken)
 	if statement.Error != nil {
 		sendMsg(w,
@@ -184,14 +134,14 @@ func getSlackGetQueryParameterValue(value string, r *http.Request) string {
 	return r.URL.Query().Get(value)
 }
 
-func respondJSON(message message, w http.ResponseWriter) {
+func respondJSON(message types.Message, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 
 	msgJSON, _ := json.Marshal(message)
 	fmt.Fprint(w, string(msgJSON))
 }
 func sendMsg(responseWriter http.ResponseWriter, msg string, s ...interface{}) {
-	respondJSON(message{Text: fmt.Sprintf(msg, s...)}, responseWriter)
+	respondJSON(types.Message{Text: fmt.Sprintf(msg, s...)}, responseWriter)
 }
 
 func checkError(error error) {

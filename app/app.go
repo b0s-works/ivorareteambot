@@ -1,9 +1,10 @@
 package app
 
 import (
-	"github.com/jinzhu/gorm"
 	"fmt"
-	"strconv"
+	"github.com/jinzhu/gorm"
+	"ivorareteambot/types"
+	"log"
 )
 
 //Application Main Application structure
@@ -19,25 +20,7 @@ func New ( db *gorm.DB ) Application {
 	}
 }
 
-type LastTask struct {
-	ID     int
-	TaskID int
-}
-func (LastTask) TableName() string {
-	return "last_task"
-}
-
-func (a Application) Slash_myHoursBidWillBe( value int64 ) {
-	curTsk := a.getLastTask()
-	
-	if curTsk.Title == "" {
-		var msg message
-		msg.Text = "Зайдайте Название задачи для которой хотите провести командную оценку времени"
-		msg.Attachments = append(msg.Attachments, attachment{Text: "Задать Название задачи можно с помощью команды /setratingsubject"})
-
-		respondJSON(msg, w)
-	return
-	}
+func (a Application) setHours( value int64 ) {
 
 	//checkDBError(db.FirstOrCreate(&task, &Task{Title: cmdText}).Error, w)
 
@@ -76,14 +59,14 @@ type Task struct {
 	BiddingDone int
 }
 //TODO Token depended last task getting
-func (a Application) getLastTask(  ) Task {
+func (a Application) GetCurrentTask(  ) types.Task {
 	// Unfound
-	var lastTask LastTask
-	a.db.First(&lastTask, &LastTask{ID: 1})
-	var currentTask Task
-	if (lastTask.TaskID > 0) {
-		a.db.First(&currentTask, &Task{ID: lastTask.TaskID})
-		fmt.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", currentTask)
+	currentTask := types.CurrentTask{ID: 1}
+	a.db.Last(&currentTask)
+	task := types.Task{ID: currentTask.TaskID}
+	if (task.ID > 0) {
+		a.db.First(&currentTask)
+		log.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", task)
 	}
-	return currentTask
+	return task
 }

@@ -1,13 +1,14 @@
 package controller
 
 import (
-	"ivorareteambot/project/app"
+	"ivorareteambot/app"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"fmt"
 	"log"
 	"strconv"
 	"encoding/json"
+	"ivorareteambot/types"
 )
 
 const slackToken = "slackToken"
@@ -44,6 +45,15 @@ func ( c Controller ) requestHandler( g *gin.Context ) {
 
 	case "/":
 	case "/tbb_myhoursbidwillbe":
+		curTsk := c.app.GetCurrentTask()
+		if curTsk.Title == "" {
+			var msg types.Message
+			msg.Text = "Зайдайте Название задачи для которой хотите провести командную оценку времени"
+			msg.Attachments = append(msg.Attachments, types.Attachment{Text: "Задать Название задачи можно с помощью команды /setratingsubject"})
+
+			respondJSON(msg, w)
+			return
+		}
 		fmt.Println(g.Params)
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
