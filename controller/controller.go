@@ -1,28 +1,28 @@
 package controller
 
 import (
-	"ivorareteambot/app"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"fmt"
 	"log"
 	"strconv"
 	"encoding/json"
+	"github.com/gin-gonic/gin"
+	"ivorareteambot/app"
 	"ivorareteambot/types"
 )
 
 const slackToken = "slackToken"
 
 type Controller struct {
-	app app.Application
-	gin *gin.Engine
+	app        app.Application
+	gin        *gin.Engine
 	slackToken string
 }
 
-func New( app app.Application, slackToken string ) Controller {
+func New(app app.Application, slackToken string) Controller {
 	return Controller{
-		app: app,
-		gin: gin.Default(),
+		app:        app,
+		gin:        gin.Default(),
 		slackToken: slackToken,
 	}
 }
@@ -37,61 +37,95 @@ func (c Controller) InitRouters() {
 	slack.POST("/", c.requestHandler)
 }
 
-func ( c Controller ) requestHandler( g *gin.Context ) {
-	cmdText := g.Param("text")
+func (c Controller) checkTaskSelected(gCtx *gin.Context) types.Task {
+	return curTsk
+}
+
+func (c Controller) requestHandler(gCtx *gin.Context) {
+	cmdText := gCtx.Params.ByName("text")
 	log.Println("cmdText:", cmdText)
 
-	switch(g.Request.URL.Path) {
+	curTsk, err := c.app.GetCurrentTask()
+	if err != nil {
+		var msg = types.Message{Text: fmt.Sprintf("При запросе текущей задачи проищошла ошибка:\n%v", err)}
+		gCtx.JSON(http.StatusInternalServerError, msg)
+		panic(msg)
+		return
+	}
 
+	switch(gCtx.Request.URL.Path) {
 	case "/":
-	case "/tbb_myhoursbidwillbe":
-		curTsk := c.app.GetCurrentTask()
-		if curTsk.Title == "" {
-			var msg types.Message
-			msg.Text = "Зайдайте Название задачи для которой хотите провести командную оценку времени"
-			msg.Attachments = append(msg.Attachments, types.Attachment{Text: "Задать Название задачи можно с помощью команды /setratingsubject"})
 
-			respondJSON(msg, w)
+	case "/tbb_sethours":
+		if curTsk.Title == "" {
+			msg := types.Message{Text: "Зайдайте «Название задачи» для которой хотите провести командную оценку времени"}
+			msg.Attachments = append(msg.Attachments, types.Attachment{Text: "Задать «Название задачи» можно с помощью команды «/tbb_settask»"})
+
+			gCtx.JSON(http.StatusOK, msg)
 			return
 		}
-		fmt.Println(g.Params)
+		fmt.Println(gCtx.Params)
+
 		hoursBid, err := strconv.ParseInt(cmdText, 10, 64)
 		if err != nil {
-			sendMsg(g, "Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText)
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s»)", cmdText)},
+			)
 			return
 		}
-		c.app.Slash_myHoursBidWillBe( hoursBid )
+		c.app.SetHours(hoursBid)
+		return
+
 	case "/tbb_setbidtask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+		if cmdText == "" {
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", gCtx.Request.URL.Path)},
+			)
 			return
 		}
-		// Unfound
-		var task = Task{TaskTitle: cmdText}
-		if err := db.FirstOrCreate(&task, "task_title = ?", cmdText).Error; err != nil {
-			sendMsg(w, "При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)
+		task, err := c.app.GetTask(cmdText)
+		if err != nil {
+			gCtx.JSON(
+				http.StatusInternalServerError,
+				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
+			)
 			return
 		}
 
-		fmt.Printf("First or create task result:\n%+v", task)
+		log.Printf("First or create task result:\n%+v", task)
 
-		if task.TaskBiddingDone != 0 {
-			sendMsg(w, "Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)
+		if task.BiddingDone != 0 {
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", cmdText)},
+			)
 			return
 		}
 
-		db.Save(&LastTask{ID: 1, TaskID: task.TaskID})
+		err = c.app.SetTask(task.ID)
+		if err != nil {
+			gCtx.JSON(
+				http.StatusInternalServerError,
+				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
+			)
+			return
 
-		currentTask = task
+		}
 
-		/*if (db_isTaskExists(cmdText)) {
-			sendMsg(w, "Задача «%s» уже существует!", cmdText)
-		}*/
+		gCtx.JSON(
+			http.StatusOK,
+			types.Message{Text: fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText)},
+		)
+		return
 
-		sendMsg(w, "Задача «%s» выдвинута для совершения ставок оценки времени.", cmdText)
 	case "/tbb_listtaskbids":
 		if cmdText == "" {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", gCtx.Request.URL.Path)},
+			)
 			return
 		}
 		// Unfound
@@ -139,17 +173,46 @@ func ( c Controller ) requestHandler( g *gin.Context ) {
 			fmt.Fprintf(w, "%v. «%s» (голосование %s)", task.TaskID, task.TaskTitle, TaskBiddingDoneString)
 		}
 	case "/tbb_removetask":
-		if (cmdText == "") {
-			sendMsg(w, "Укажите Название задачи например: «%s Название задачи».", r.URL.Path)
+		if cmdText == "" {
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", gCtx.Request.URL.Path)},
+			)
 			return
 		}
 		// Unfound
-		var task Task
-		if db.First(&task, &Task{TaskTitle: cmdText}).RecordNotFound() {
-			sendMsg(w, "Задача «%s» не найдена.", cmdText)
+		task, err := c.app.GetTask(cmdText)
+		if err != nil {
+			gCtx.JSON(
+				http.StatusInternalServerError,
+				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
+			)
+			return
+
+		}
+
+		if task.ID == 0 {
+			gCtx.JSON(
+				http.StatusOK,
+				types.Message{Text: fmt.Sprintf("Задача «%s» не найдена.", cmdText)},
+			)
 			return
 		}
 
+		rowsAffected, err := c.app.RemoveTaskByIdAndChildHours( task.ID )
+		if err != nil {
+			gCtx.JSON(
+				http.StatusInternalServerError,
+				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
+			)
+			return
+
+		}
+		gCtx.JSON(
+			http.StatusInternalServerError,
+			types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
+		)
+		return
 		if db.Delete(Task{}, "task_id = ?", task.TaskID).RowsAffected == 1 {
 			sendMsg(w, "Задача «%s» удалена.", cmdText)
 			if db.Delete(TaskHoursBidAndMember{}, "task_id = ?", task.TaskID).RowsAffected > 0 {
@@ -184,19 +247,10 @@ func (c Controller) slackAuth(ctx *gin.Context) {
 
 	ctx.Next()
 }
-
-
-type attachment struct {
-	Text string `json:"text"`
-}
-type message struct {
-	Text        string       `json:"text"`
-	Attachments []attachment `json:"attachments"`
-}
 func respondJSON(message message, g *gin.Context) {
 	msgJSON, _ := json.Marshal(message)
 	//string(msgJSON)
-	g.JSON(http.StatusOK, string(msgJSON) )
+	g.JSON(http.StatusOK, string(msgJSON))
 }
 func sendMsg(g *gin.Context, msg string, s ...interface{}) {
 	respondJSON(message{Text: fmt.Sprintf(msg, s...)}, g)
