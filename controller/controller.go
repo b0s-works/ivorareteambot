@@ -41,17 +41,21 @@ func (c Controller) checkTaskSelected(gCtx *gin.Context) types.Task {
 	return curTsk
 }
 
+func (c Controller) checkDBError( err error, prefixMsg string, gCtx *gin.Context ) {
+	if err != nil {
+		var msg = types.Message{Text: fmt.Sprintf("%s:\n%v", prefixMsg, err)}
+		gCtx.JSON(http.StatusInternalServerError, msg)
+		panic(msg)
+		return
+	}
+}
+
 func (c Controller) requestHandler(gCtx *gin.Context) {
 	cmdText := gCtx.Params.ByName("text")
 	log.Println("cmdText:", cmdText)
 
 	curTsk, err := c.app.GetCurrentTask()
-	if err != nil {
-		var msg = types.Message{Text: fmt.Sprintf("При запросе текущей задачи проищошла ошибка:\n%v", err)}
-		gCtx.JSON(http.StatusInternalServerError, msg)
-		panic(msg)
-		return
-	}
+	c.checkDBError( err, "При запросе текущей задачи произошла ошибка", gCtx )
 
 	switch(gCtx.Request.URL.Path) {
 	case "/":
@@ -86,13 +90,7 @@ func (c Controller) requestHandler(gCtx *gin.Context) {
 			return
 		}
 		task, err := c.app.GetTask(cmdText)
-		if err != nil {
-			gCtx.JSON(
-				http.StatusInternalServerError,
-				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
-			)
-			return
-		}
+		c.checkDBError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText), gCtx)
 
 		log.Printf("First or create task result:\n%+v", task)
 
@@ -105,14 +103,7 @@ func (c Controller) requestHandler(gCtx *gin.Context) {
 		}
 
 		err = c.app.SetTask(task.ID)
-		if err != nil {
-			gCtx.JSON(
-				http.StatusInternalServerError,
-				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
-			)
-			return
-
-		}
+		c.checkDBError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText), gCtx)
 
 		gCtx.JSON(
 			http.StatusOK,
@@ -182,14 +173,7 @@ func (c Controller) requestHandler(gCtx *gin.Context) {
 		}
 		// Unfound
 		task, err := c.app.GetTask(cmdText)
-		if err != nil {
-			gCtx.JSON(
-				http.StatusInternalServerError,
-				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
-			)
-			return
-
-		}
+		c.checkDBError(err, fmt.Sprintf("При поиске задачи «%s» в базе данных произошла ошибка:\n%v", cmdText), gCtx)
 
 		if task.ID == 0 {
 			gCtx.JSON(
@@ -200,19 +184,8 @@ func (c Controller) requestHandler(gCtx *gin.Context) {
 		}
 
 		rowsAffected, err := c.app.RemoveTaskByIdAndChildHours( task.ID )
-		if err != nil {
-			gCtx.JSON(
-				http.StatusInternalServerError,
-				types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
-			)
-			return
+		c.checkDBError(err, fmt.Sprintf("При удалении задачи «%s» из базы данных произошла ошибка:\n%v", cmdText), gCtx)
 
-		}
-		gCtx.JSON(
-			http.StatusInternalServerError,
-			types.Message{Text: fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%v", cmdText, err)},
-		)
-		return
 		if db.Delete(Task{}, "task_id = ?", task.TaskID).RowsAffected == 1 {
 			sendMsg(w, "Задача «%s» удалена.", cmdText)
 			if db.Delete(TaskHoursBidAndMember{}, "task_id = ?", task.TaskID).RowsAffected > 0 {
