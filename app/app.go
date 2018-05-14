@@ -5,7 +5,6 @@ import (
 	"github.com/jinzhu/gorm"
 	"ivorareteambot/types"
 	"log"
-	"net/http"
 )
 
 //Application Main Application structure
@@ -20,30 +19,62 @@ func New(db *gorm.DB) Application {
 	}
 }
 
-func (a Application) GetTask( title string ) (types.Task, error) {
-	var task = types.Task{Title: title}
-	if err := a.db.FirstOrCreate(&task, "title = ?", title).Error; err != nil {
-		return task, err
+func (a Application) RemoveTaskById(taskId int) (int64, error) {
+	statement := a.db.Delete(types.Task{}, "task_id = ?", taskId)
+	if statement.Error != nil {
+		return statement.RowsAffected, statement.Error
 	}
-	return task, nil
+	return statement.RowsAffected, nil
 }
-func (a Application) SetTask( id int ) error {
-	return a.db.Save(&types.CurrentTask{ID: 1, TaskID: id}).Error
+func (a Application) RemoveTaskChildHoursById(taskId int) (int64, error) {
+	statement := a.db.Delete(types.TaskHoursBidAndMember{}, "task_id = ?", taskId)
+	if statement.Error != nil {
+		return statement.RowsAffected, statement.Error
+	}
+	return statement.RowsAffected, nil
+}
+func (a Application) RemoveTaskByIdAndChildHours(taskID int) (int64, int64, error) {
+	rowsAffected, err := a.RemoveTaskById(taskID)
+	if err != nil {
+		return rowsAffected, 0, err
+	}
+	if rowsAffected == 1 {
+		childRowsAffected, err := a.RemoveTaskChildHoursById(taskID)
+		if err != nil {
+			return rowsAffected, childRowsAffected, err
+		}
+		return rowsAffected, childRowsAffected, nil
+	}
+	return rowsAffected, 0, nil
 }
 
-func (a Application) RemoveTaskById( id int ) (error) {
+func (a Application) GetAllTasks() ([]types.Task, error) {
+	var tasks []types.Task
+	if err := a.db.Table("task").Select("task_id, task_title, task_bidding_done").Find(&tasks).Error; err != nil {
+		return tasks, err
+	}
+	return tasks, nil
+}
+func (a Application) GetTaskHoursBids(taskId int) ([]types.TaskHoursBidAndMember, error) {
+	var membersAndBids []types.TaskHoursBidAndMember
+	if err := a.db.Where(&types.TaskHoursBidAndMember{TaskID: taskId}).Find(&membersAndBids).Error; err != nil {
+		return membersAndBids, err
+	}
+	return membersAndBids, nil
+}
+func (a Application) GetTask(title string) (types.Task, error) {
 	var task = types.Task{Title: title}
 	if err := a.db.FirstOrCreate(&task, "title = ?", title).Error; err != nil {
 		return task, err
 	}
 	return task, nil
+}
+func (a Application) SetTask(id int) error {
+	return a.db.Save(&types.CurrentTask{ID: 1, TaskID: id}).Error
 }
 
 func (a Application) SetHours(value int64) error {
 	//checkDBError(db.FirstOrCreate(&task, &Task{Title: cmdText}).Error, w)
-
-	UserID := getSlackValueFromPostOrGet("user_id", r)
-	UserName := getSlackValueFromPostOrGet("user_name", r)
 
 	var taskHoursBidAndMember TaskHoursBidAndMember
 	db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", curTsk.ID, UserID)
