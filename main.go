@@ -1,6 +1,20 @@
 package main
 
 import (
+	"runtime"
+	"fmt"
+	"github.com/jinzhu/gorm"
+	"ivorareteambot/types"
+	"ivorareteambot/config"
+	"ivorareteambot/app"
+	"ivorareteambot/controller"
+	"net/http"
+	"log"
+	"encoding/json"
+)
+
+
+import (
 	"encoding/json"
 	"net/http"
 	"fmt"
@@ -20,6 +34,14 @@ var db *gorm.DB
 var taskTitle string
 var currentTask types.Task
 
+
+func GetFunctionName() string {
+	pc := make([]uintptr, 15)
+	n := runtime.Callers(2, pc)
+	frames := runtime.CallersFrames(pc[:n])
+	frame, _ := frames.Next()
+	return fmt.Sprintf("%s:%d", frame.Line, frame.Function)
+}
 
 
 func main() {

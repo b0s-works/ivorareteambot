@@ -5,11 +5,20 @@ import (
 	"github.com/jinzhu/gorm"
 	"ivorareteambot/types"
 	"log"
+	"runtime"
 )
 
 //Application Main Application structure
 type Application struct {
 	db *gorm.DB
+}
+
+func GetFunctionName() string {
+	pc := make([]uintptr, 15)
+	n := runtime.Callers(2, pc)
+	frames := runtime.CallersFrames(pc[:n])
+	frame, _ := frames.Next()
+	return fmt.Sprintf("%s:%d", frame.Line, frame.Function)
 }
 
 //New Application constructor
@@ -73,36 +82,34 @@ func (a Application) SetTask(id int) error {
 	return a.db.Save(&types.CurrentTask{ID: 1, TaskID: id}).Error
 }
 
-func (a Application) SetHours(value int64) error {
-	//checkDBError(db.FirstOrCreate(&task, &Task{Title: cmdText}).Error, w)
+//TODO Token depended last task getting
+func (a Application) GetUserBidByTaskIDAndUserIdentity(taskId int, UserIdentity string) (types.TaskHoursBidAndMember, error) {
+	log.Println("GetCurrentTask:", "Запрос прошлого активного задания по которому шло голосование до перезапуска программы...")
 
-	var taskHoursBidAndMember TaskHoursBidAndMember
-	db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", curTsk.ID, UserID)
-	fmt.Printf("taskHoursBidAndMember: %v %+v\n", taskHoursBidAndMember.TaskID > 0, taskHoursBidAndMember)
-	if taskHoursBidAndMember.TaskID > 0 {
-		fmt.Println("We have to make update:")
-
-		oldBid := taskHoursBidAndMember.MemberTimeBid
-
-		taskHoursBidAndMember.MemberNick = UserName
-		taskHoursBidAndMember.MemberTimeBid = hoursBid
-
-		updateResult := db.Save(&taskHoursBidAndMember)
-		sendMsgOnRwsAffctdOrErr(w, updateResult,
-			"Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", []interface{}{curTsk.Title, oldBid, hoursBid},
-			"При обновлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{updateResult.Error},
-		)
+	var taskHoursBidAndMember types.TaskHoursBidAndMember
+	if err := a.db.First(&taskHoursBidAndMember, "task_id = ? and member_identity = ?", taskId, UserIdentity).Error; err != nil {
+		return taskHoursBidAndMember, err
 	}
-	//fmt.Printf( "New record data\n - %+v",  )
-	createResult := db.Create(&TaskHoursBidAndMember{TaskID: curTsk.ID, MemberIdentity: UserID, MemberNick: UserName, MemberTimeBid: hoursBid})
-	sendMsgOnRwsAffctdOrErr(w, createResult,
-		"Ваша оценка для задачи «%s»: %v\nСпасибо!", []interface{}{curTsk.Title, hoursBid},
-		"При добавлении оценки по задаче «%s» произошла ошибка:\n", []interface{}{createResult.Error},
-	)
+
+	return taskHoursBidAndMember, nil
+}
+
+func (a Application) SetHours(hours int64, taskHoursBidAndMember types.TaskHoursBidAndMember) (int64, error) {
+	//checkDBError(db.FirstOrCreate(&task, &Task{Title: cmdText}).Error, w)
+	fmt.Printf("%s:", "taskHoursBidAndMember: %v %+v\n", GetFunctionName(), taskHoursBidAndMember.TaskID > 0, taskHoursBidAndMember)
+
+
+	saveResult := a.db.Save(&taskHoursBidAndMember)
+	if err := saveResult.Error; err != nil {
+		return saveResult.RowsAffected, err
+	}
+
+	return saveResult.RowsAffected, nil
 }
 
 //TODO Token depended last task getting
 func (a Application) GetCurrentTask() (types.Task, error) {
+	log.Println("GetCurrentTask:", "Запрос прошлого активного задания по которому шло голосование до перезапуска программы...")
 	currentTask := types.CurrentTask{ID: 1}
 	if err := a.db.Last(&currentTask).Error; err != nil {
 		return types.Task{ID: currentTask.TaskID}, err
@@ -113,7 +120,6 @@ func (a Application) GetCurrentTask() (types.Task, error) {
 		if err := a.db.First(&currentTask).Error; err != nil {
 			return task, err
 		}
-		log.Println("Автовыбор прошлого активного задания по которому шло голосование до перезапуска программы:\n", task)
 	}
 	return task, nil
 }
