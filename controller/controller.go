@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"ivorareteambot/app"
 	"ivorareteambot/types"
-	"encoding/json"
 	"runtime"
 )
 
@@ -276,12 +275,4 @@ func (c Controller) slackAuth(gCtx *gin.Context) {
 	}
 
 	gCtx.Next()
-}
-func respondJSON(message types.Message, g *gin.Context) {
-	msgJSON, _ := json.Marshal(message)
-	//string(msgJSON)
-	g.JSON(http.StatusOK, string(msgJSON))
-}
-func sendMsg(g *gin.Context, msg string, s ...interface{}) {
-	respondJSON(types.Message{Text: fmt.Sprintf(msg, s...)}, g)
 }
