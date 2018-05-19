@@ -2,10 +2,11 @@ package app
 
 import (
 	"fmt"
-	"github.com/jinzhu/gorm"
 	"ivorareteambot/types"
 	"log"
 	"runtime"
+
+	"github.com/jinzhu/gorm"
 )
 
 //Application Main Application structure
@@ -28,33 +29,34 @@ func New(db *gorm.DB) Application {
 	}
 }
 
-func (a Application) RemoveTaskById(taskId int) (int64, error) {
-	statement := a.db.Delete(types.Task{}, "task_id = ?", taskId)
+// RemoveTaskByID
+func (a Application) RemoveTaskByID(taskID int) (int64, error) {
+	statement := a.db.Delete(types.Task{}, "task_id = ?", taskID)
 	if statement.Error != nil {
 		return statement.RowsAffected, statement.Error
 	}
 	return statement.RowsAffected, nil
 }
-func (a Application) RemoveTaskChildHoursById(taskId int) (int64, error) {
-	statement := a.db.Delete(types.TaskHoursBidAndMember{}, "task_id = ?", taskId)
+func (a Application) RemoveTaskChildHoursByID(taskID int) (int64, error) {
+	statement := a.db.Delete(types.TaskHoursBidAndMember{}, "task_id = ?", taskID)
 	if statement.Error != nil {
 		return statement.RowsAffected, statement.Error
 	}
 	return statement.RowsAffected, nil
 }
-func (a Application) RemoveTaskByIdAndChildHours(taskID int) (int64, int64, error) {
-	rowsAffected, err := a.RemoveTaskById(taskID)
+func (a Application) RemoveTaskByIdAndChildHours(taskID int) (int64, error) {
+	rowsAffected, err := a.RemoveTaskByID(taskID)
 	if err != nil {
-		return rowsAffected, 0, err
+		return 0, err
 	}
 	if rowsAffected == 1 {
-		childRowsAffected, err := a.RemoveTaskChildHoursById(taskID)
+		childRowsAffected, err := a.RemoveTaskChildHoursByID(taskID)
 		if err != nil {
-			return rowsAffected, childRowsAffected, err
+			return childRowsAffected, err
 		}
-		return rowsAffected, childRowsAffected, nil
+		return childRowsAffected, nil
 	}
-	return rowsAffected, 0, nil
+	return 0, nil
 }
 
 func (a Application) GetAllTasks() ([]types.Task, error) {
@@ -64,9 +66,9 @@ func (a Application) GetAllTasks() ([]types.Task, error) {
 	}
 	return tasks, nil
 }
-func (a Application) GetTaskHoursBids(taskId int) ([]types.TaskHoursBidAndMember, error) {
+func (a Application) GetTaskHoursBids(taskID int) ([]types.TaskHoursBidAndMember, error) {
 	var membersAndBids []types.TaskHoursBidAndMember
-	if err := a.db.Where(&types.TaskHoursBidAndMember{TaskID: taskId}).Find(&membersAndBids).Error; err != nil {
+	if err := a.db.Where(&types.TaskHoursBidAndMember{TaskID: taskID}).Find(&membersAndBids).Error; err != nil {
 		return membersAndBids, err
 	}
 	return membersAndBids, nil
@@ -98,7 +100,6 @@ func (a Application) SetHours(hours int64, taskHoursBidAndMember types.TaskHours
 	//checkDBError(db.FirstOrCreate(&task, &Task{Title: cmdText}).Error, w)
 	fmt.Printf("%s:", "taskHoursBidAndMember: %v %+v\n", GetFunctionName(), taskHoursBidAndMember.TaskID > 0, taskHoursBidAndMember)
 
-
 	saveResult := a.db.Save(&taskHoursBidAndMember)
 	if err := saveResult.Error; err != nil {
 		return saveResult.RowsAffected, err
@@ -107,7 +108,8 @@ func (a Application) SetHours(hours int64, taskHoursBidAndMember types.TaskHours
 	return saveResult.RowsAffected, nil
 }
 
-//TODO Token depended last task getting
+// GetCurrentTask
+// TODO Token depended last task getting
 func (a Application) GetCurrentTask() (types.Task, error) {
 	log.Println("GetCurrentTask:", "Запрос прошлого активного задания по которому шло голосование до перезапуска программы...")
 	currentTask := types.CurrentTask{ID: 1}
