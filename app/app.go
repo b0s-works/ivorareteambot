@@ -2,11 +2,12 @@ package app
 
 import (
 	"fmt"
-	"ivorareteambot/types"
 	"log"
 	"runtime"
 
 	"github.com/jinzhu/gorm"
+
+	"ivorareteambot/types"
 )
 
 //Application Main Application structure
@@ -29,7 +30,7 @@ func New(db *gorm.DB) Application {
 	}
 }
 
-// RemoveTaskByID
+// RemoveTaskByID removes task by it's int primary key identifier
 func (a Application) RemoveTaskByID(taskID int) (int64, error) {
 	statement := a.db.Delete(types.Task{}, "task_id = ?", taskID)
 	if statement.Error != nil {
@@ -37,6 +38,8 @@ func (a Application) RemoveTaskByID(taskID int) (int64, error) {
 	}
 	return statement.RowsAffected, nil
 }
+
+// RemoveTaskChildHoursByID removes hours which was voted/offered/bidded by voters by task primary key int identifier
 func (a Application) RemoveTaskChildHoursByID(taskID int) (int64, error) {
 	statement := a.db.Delete(types.TaskHoursBidAndMember{}, "task_id = ?", taskID)
 	if statement.Error != nil {

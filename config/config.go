@@ -1,8 +1,9 @@
 package config
 
 import (
-	"github.com/jinzhu/configor"
 	"fmt"
+
+	"github.com/jinzhu/configor"
 )
 
 type Config struct {

@@ -1,17 +1,18 @@
 package main
 
 import (
-	"runtime"
 	"fmt"
-	"github.com/jinzhu/gorm"
-	"ivorareteambot/types"
-	"ivorareteambot/config"
-	"ivorareteambot/app"
-	"ivorareteambot/controller"
-	"net/http"
 	"log"
-)
+	"net/http"
+	"runtime"
 
+	"github.com/jinzhu/gorm"
+
+	"ivorareteambot/app"
+	"ivorareteambot/config"
+	"ivorareteambot/controller"
+	"ivorareteambot/types"
+)
 
 import (
 	_ "github.com/jinzhu/gorm/dialects/mysql"
@@ -23,7 +24,6 @@ var db *gorm.DB
 var taskTitle string
 var currentTask types.Task
 
-
 func GetFunctionName() string {
 	pc := make([]uintptr, 15)
 	n := runtime.Callers(2, pc)
@@ -32,11 +32,15 @@ func GetFunctionName() string {
 	return fmt.Sprintf("%s:%d", frame.Line, frame.Function)
 }
 
-
 func main() {
-	config := config.GetConfig();
+	cfg := config.GetConfig()
 
-	db, dbErr := openDB("mysql", config)
+	var defCfg config.Config
+	if cfg.SlackToken == defCfg.SlackToken {
+		log.Println("SlackToken configuration field is not set. Please set it in configuration file «config/config.yml».")
+	}
+
+	db, dbErr := openDB("mysql", cfg)
 	if dbErr != nil {
 		panic(dbErr)
 	}
@@ -45,7 +49,7 @@ func main() {
 	a := app.New(db)
 	c := controller.New(
 		a,
-		config.SlackToken,
+		cfg.SlackToken,
 	)
 
 	c.InitRouters()
@@ -53,7 +57,8 @@ func main() {
 	httpPort := 80
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	fmt.Printf("listening on %v\n", httpPort)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", httpPort), nil))
+	//TODO May be we have to use another way of c.Gin accessing? Probably that can be wrong when you make c.Gin variable globally accessible.
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", httpPort), c.Gin))
 }
 func openDB(dialect string, config config.Config) (*gorm.DB, error) {
 	var dsn = fmt.Sprintf(
@@ -67,10 +72,10 @@ func openDB(dialect string, config config.Config) (*gorm.DB, error) {
 		config.DB.ParseTime,
 	)
 
-	fmt.Printf("dsn: %+v", dsn)
+	log.Printf("dsn is:\n%+v", dsn)
 
-	db, err := gorm.Open( dialect, dsn )
-	db.LogMode( dbLoggingEnabled )
+	db, err := gorm.Open(dialect, dsn)
+	db.LogMode(dbLoggingEnabled)
 
 	return db, err
 }
