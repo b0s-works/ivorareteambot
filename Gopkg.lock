@@ -69,12 +69,6 @@
   version = "v1.0.5"
 
 [[projects]]
-  branch = "master"
-  name = "github.com/toorop/gin-logrus"
-  packages = ["."]
-  revision = "fd3afab50f4f71a32c5409c164d19f2c01cca5af"
-
-[[projects]]
   name = "github.com/ugorji/go"
   packages = ["codec"]
   revision = "b4c50a2b199d93b13dc15e78929cfb23bfdf21ab"
@@ -110,6 +104,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "47010e89b8bb3e2c2a6065ae1d1f7ac4c0d2931a6300330f78bb45603136ae86"
+  inputs-digest = "770fd31792595522781f8d868c0c982e6f48da861c803d83e666f4d67e5dcc2f"
   solver-name = "gps-cdcl"
   solver-version = 1

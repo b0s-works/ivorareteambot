@@ -11,22 +11,26 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/gin-gonic/gin"
+	"bytes"
+	"io/ioutil"
 )
 
 // Controller main controller structure
 type Controller struct {
-	app        app.Application
+	app app.Application
 	//TODO May be we have to use another way of c.Gin accessing for listenAndServe in main.go? Probably that can be wrong when you make c.Gin variable globally accessible?
-	Gin        *gin.Engine
-	slackToken string
+	Gin           *gin.Engine
+	slackInToken  string
+	slackOutToken string
 }
 
 // New controller constructor
-func New(app app.Application, slackToken string) Controller {
+func New(app app.Application, slackInToken string, slackOutToken string) Controller {
 	return Controller{
-		app:        app,
-		Gin:        gin.Default(),
-		slackToken: slackToken,
+		app:           app,
+		Gin:           gin.Default(),
+		slackInToken:  slackInToken,
+		slackOutToken: slackOutToken,
 	}
 }
 
@@ -42,7 +46,11 @@ func myLog() {
 // InitRouters initialize all handlers and routes
 func (c Controller) InitRouters() {
 	c.Gin.Use(func(ctx *gin.Context) {
-		logrus.Error("request given")
+		ctx.Request.ParseForm()
+		for key, value := range ctx.Request.PostForm {
+			logrus.Println(key, value[0])
+		}
+		logrus.Error("request given", ctx.Request.Body)
 	})
 	slack := c.Gin.Group("/slack")
 	slack.Use(c.slackAuth)
@@ -70,6 +78,7 @@ func newMessage(mainMessage string) *types.Message {
 func checkError(err error, prefixMsg string, ctx *gin.Context) {
 	if err != nil {
 		var msg = newMessage(fmt.Sprintf("%s:\n%+v", prefixMsg, err))
+		logrus.Error(msg)
 		ctx.JSON(http.StatusInternalServerError, msg)
 	}
 	return
@@ -77,8 +86,12 @@ func checkError(err error, prefixMsg string, ctx *gin.Context) {
 
 func (c Controller) slackAuth(ctx *gin.Context) {
 	token := ctx.Request.FormValue("token")
-	if len(token) == 0 || token != c.slackToken {
-		log.Println(fmt.Sprintf("SlackToken that came from Slack are empty or wrong. Token that came is:\n\t\t\t«%v»", token))
+	if len(token) == 0 || token != c.slackInToken {
+		ctx.JSON(
+			http.StatusOK,
+			newMessage("Security Slack token that came from Slack are empty or wrong."),
+		)
+		logrus.Println(fmt.Sprintf("SlackToken that came from Slack are empty or wrong. Token that came is:\n\t\t\t«%v»", token))
 		ctx.Abort()
 		return
 	}
@@ -87,15 +100,15 @@ func (c Controller) slackAuth(ctx *gin.Context) {
 }
 
 func (c Controller) setHours(ctx *gin.Context) {
-	taskTitle := ctx.Params.ByName("text")
+	taskTitle := ctx.Request.FormValue("text")
 	log.Println("taskTitle:", taskTitle)
 
 	curTsk, err := c.app.GetCurrentTask()
-	checkError(err, "При запросе текущей задачи произошла ошибка", ctx)
+	checkError(err, "Error occurred while current task request.", ctx)
 
 	if curTsk.Title == "" {
-		response := newMessage("Зайдайте «Название задачи» для которой хотите провести командную оценку времени").
-			AddAttachment("Задать «Название задачи» можно с помощью команды «/tbb_settask»")
+		response := newMessage("Please, specify the «Task title», that will be set to hours voting.").
+			AddAttachment("«Task title» can be specified by «/tbb_settask» command.")
 		ctx.JSON(http.StatusOK, response)
 		return
 	}
@@ -121,7 +134,7 @@ func (c Controller) setHours(ctx *gin.Context) {
 	}
 
 	taskHoursBidAndMember, err := c.app.GetUserBidByTaskIDAndUserIdentity(curTsk.ID, UserIdentity)
-	checkError(err, "При запросе из базы данных, оценки времени пользователя, произошла ошибка", ctx)
+	checkError(err, "Error occurred when hours requested from db", ctx)
 
 	oldBid := taskHoursBidAndMember.MemberTimeBid
 
@@ -157,49 +170,78 @@ func (c Controller) setHours(ctx *gin.Context) {
 	)
 }
 
-func (c Controller) setTask(gCtx *gin.Context) {
-	taskTitle := gCtx.Params.ByName("text")
+func (c Controller) setTask(ctx *gin.Context) {
+	taskTitle := ctx.Request.FormValue("text")
 	log.Println("taskTitle:", taskTitle)
 
 	if taskTitle == "" {
-		gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", gCtx.Request.URL.Path)))
+		ctx.JSON(http.StatusOK, newMessage("Please, specify «Task title».").
+			AddAttachment(fmt.Sprintf("«Task title» can be specified by «%[1]s» command. For example:\n%[1]s Task title.", "/tbb_settask")))
 		return
 	}
 	task, err := c.app.GetTask(taskTitle)
-	checkError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%+v", taskTitle, err), gCtx)
+	checkError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%+v", taskTitle, err), ctx)
 
 	log.Printf("First or create task result:\n%+v", task)
 
 	if task.BiddingDone != 0 {
-		gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", taskTitle)))
+		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", taskTitle)))
 		return
 	}
 
 	err = c.app.SetTask(task.ID)
-	checkError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%+v", taskTitle, err), gCtx)
+	checkError(err, fmt.Sprintf("Error occurred on «%s» task set:\n%+v", taskTitle, err), ctx)
+	var url = "https://slack.com/api/chat.postMessage"
+	var msg = fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle)
 
-	gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle)))
+	//logrus.Println( string(jsonReqData) )
+
+	var jsonReqData = []byte(fmt.Sprintf(`{
+		"channel": "%s",
+		"text":  "%s"
+	}`,
+		ctx.Request.FormValue("channel_id"),
+		msg,
+	))
+	logrus.Println( string(jsonReqData) )
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonReqData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.slackOutToken))
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Println("response Status:", resp.Status)
+	fmt.Println("response Headers:", resp.Header)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Println("response Body:", string(body))
+
+	ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle)))
 	return
 
 }
 
-func (c Controller) listTaskHours(gCtx *gin.Context) {
-	taskTitle := gCtx.Params.ByName("text")
+func (c Controller) listTaskHours(ctx *gin.Context) {
+	taskTitle := ctx.Request.FormValue("text")
 	log.Println("cmdText:", taskTitle)
 
 	if taskTitle == "" {
-		gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", gCtx.Request.URL.Path)))
+		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", ctx.Request.URL.Path)))
 		return
 	}
 	var task, err = c.app.GetTask(taskTitle)
-	checkError(err, "Произошла ошибка при обращении к базе данных", gCtx)
+	checkError(err, "Произошла ошибка при обращении к базе данных", ctx)
 
 	if task.ID == 0 {
-		gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача с точным названием «%s» не найдена.", taskTitle)))
+		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача с точным названием «%s» не найдена.", taskTitle)))
 		return
 	}
 	membersAndBids, err := c.app.GetTaskHoursBids(task.ID)
-	checkError(err, "Произошла ошибка при обращении к базе данных", gCtx)
+	checkError(err, "Произошла ошибка при обращении к базе данных", ctx)
 
 	if len(membersAndBids) > 0 {
 		var resultMembersAndBidsList string
@@ -212,13 +254,13 @@ func (c Controller) listTaskHours(gCtx *gin.Context) {
 			)
 			fmt.Println("memberAndBid:", memberAndBid)
 		}
-		gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Для задачи «%s» участниками были сделаны следующие ставки:\n%s", taskTitle, resultMembersAndBidsList)))
+		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Для задачи «%s» участниками были сделаны следующие ставки:\n%s", taskTitle, resultMembersAndBidsList)))
 		return
 	}
 
 	fmt.Println(task)
 
-	gCtx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставок времени для задачи «%s» не сделано.", taskTitle)))
+	ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставок времени для задачи «%s» не сделано.", taskTitle)))
 	return
 }
 
@@ -242,7 +284,7 @@ func (c Controller) listAllTasks(ctx *gin.Context) {
 }
 
 func (c Controller) removeTask(ctx *gin.Context) {
-	taskTitle := ctx.Params.ByName("text")
+	taskTitle := ctx.Request.FormValue("text")
 	log.Println("taskTitle:", taskTitle)
 
 	/*curTsk, err := c.app.GetCurrentTask(); checkError(err, "При запросе текущей задачи произошла ошибка", ctx)*/

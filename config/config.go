@@ -19,7 +19,10 @@ type Config struct {
 		Charset   string `default:"utf8"`
 		ParseTime string `default:"true"`
 	}
-	SlackToken string `default:"someSlackToken"`
+	Slack struct {
+		InToken string `default:"someSlackInToken"`
+		OutToken string `default:"someSlackOutToken"`
+	}
 }
 
 func GetConfig() Config {

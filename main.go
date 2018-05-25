@@ -36,8 +36,11 @@ func main() {
 	cfg := config.GetConfig()
 
 	var defCfg config.Config
-	if cfg.SlackToken == defCfg.SlackToken {
-		log.Println("SlackToken configuration field is not set. Please set it in configuration file «config/config.yml».")
+	if cfg.Slack.InToken == defCfg.Slack.InToken {
+		log.Println("SlackInToken configuration field is not set. Please set it in configuration file «config/config.yml».")
+	}
+	if cfg.Slack.OutToken == defCfg.Slack.OutToken {
+		log.Println("SlackOutToken configuration field is not set. Please set it in configuration file «config/config.yml».")
 	}
 
 	db, dbErr := openDB("mysql", cfg)
@@ -49,7 +52,8 @@ func main() {
 	a := app.New(db)
 	c := controller.New(
 		a,
-		cfg.SlackToken,
+		cfg.Slack.InToken,
+		cfg.Slack.OutToken,
 	)
 
 	c.InitRouters()
