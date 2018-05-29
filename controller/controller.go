@@ -13,13 +13,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"bytes"
 	"io/ioutil"
+	"encoding/json"
 )
 
 // Controller main controller structure
 type Controller struct {
-	app app.Application
-	//TODO May be we have to use another way of c.Gin accessing for listenAndServe in main.go? Probably that can be wrong when you make c.Gin variable globally accessible?
-	Gin           *gin.Engine
+	app           app.Application
+	gin           *gin.Engine
 	slackInToken  string
 	slackOutToken string
 }
@@ -28,7 +28,7 @@ type Controller struct {
 func New(app app.Application, slackInToken string, slackOutToken string) Controller {
 	return Controller{
 		app:           app,
-		Gin:           gin.Default(),
+		gin:           gin.Default(),
 		slackInToken:  slackInToken,
 		slackOutToken: slackOutToken,
 	}
@@ -36,39 +36,38 @@ func New(app app.Application, slackInToken string, slackOutToken string) Control
 
 // Serve - start HTTP requests listener
 func (c Controller) Serve() {
-	http.Handle("/", c.Gin)
-}
+	http.Handle("/", c.gin)
 
-func myLog() {
-
+	httpPort := 80
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	fmt.Printf("listening on %v\n", httpPort)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", httpPort), c.gin))
 }
 
 // InitRouters initialize all handlers and routes
 func (c Controller) InitRouters() {
-	c.Gin.Use(func(ctx *gin.Context) {
+	c.gin.Use(func(ctx *gin.Context) {
 		ctx.Request.ParseForm()
 		for key, value := range ctx.Request.PostForm {
 			logrus.Println(key, value[0])
 		}
 		logrus.Error("request given", ctx.Request.Body)
 	})
-	slack := c.Gin.Group("/slack")
+	slack := c.gin.Group("/slack")
 	slack.Use(c.slackAuth)
-	{
-		slack.POST("/", func(ctx *gin.Context) {
-			log.Println(ctx.Request.URL.Path, ctx)
-		})
+	slack.POST("/", func(ctx *gin.Context) {
+		logrus.Println(ctx.Request.URL.Path)
+	})
 
-		slack.POST("/sethours", c.setHours)
+	slack.POST("/sethours", c.setHours)
 
-		slack.POST("/settask", c.setTask)
+	slack.POST("/settask", c.setTask)
 
-		slack.POST("/listtaskhours", c.listTaskHours)
+	slack.POST("/listtaskhours", c.listTaskHours)
 
-		slack.POST("/listalltasks", c.listAllTasks)
+	slack.POST("/listalltasks", c.listAllTasks)
 
-		slack.POST("/removetask", c.removeTask)
-	}
+	slack.POST("/removetask", c.removeTask)
 }
 
 func newMessage(mainMessage string) *types.Message {
@@ -84,14 +83,51 @@ func checkError(err error, prefixMsg string, ctx *gin.Context) {
 	return
 }
 
+func (c Controller) postJSONMessage(jsonData []byte) (string, error) {
+	var url = "https://slack.com/api/chat.postMessage"
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.slackOutToken))
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	fmt.Println("response Status:", resp.Status)
+	fmt.Println("response Headers:", resp.Header)
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Println("response Body:", string(body))
+
+	return string(body), nil
+}
+func (c Controller) sendPOSTMessage(message *types.PostChannelMessage) (string, error) {
+
+	b, err := json.Marshal(message)
+	if err != nil {
+		fmt.Printf("Error: %s", err)
+		return "", err
+	}
+
+	resp, err := c.postJSONMessage(b)
+
+	return resp, err
+}
+func (c Controller) postChannelMessage(text string, channelID string, asUser bool, username string) (string, error) {
+	var msg = types.NewPostChannelMessage(text, channelID, asUser, username, c.slackOutToken)
+	logrus.Printf("NewPostChannelMessage is:\n%+v\n", msg)
+
+	return c.sendPOSTMessage(msg)
+}
+
 func (c Controller) slackAuth(ctx *gin.Context) {
 	token := ctx.Request.FormValue("token")
 	if len(token) == 0 || token != c.slackInToken {
-		ctx.JSON(
-			http.StatusOK,
-			newMessage("Security Slack token that came from Slack are empty or wrong."),
-		)
-		logrus.Println(fmt.Sprintf("SlackToken that came from Slack are empty or wrong. Token that came is:\n\t\t\t«%v»", token))
+		msg := "Security Slack token that came from Slack are empty or wrong."
+		c.respondMessage(ctx, msg)
+		logrus.Println(msg + " " + fmt.Sprintf("Token that came is:\n\t\t\t«%v»", token))
 		ctx.Abort()
 		return
 	}
@@ -101,7 +137,7 @@ func (c Controller) slackAuth(ctx *gin.Context) {
 
 func (c Controller) setHours(ctx *gin.Context) {
 	taskTitle := ctx.Request.FormValue("text")
-	log.Println("taskTitle:", taskTitle)
+	logrus.Printf("taskTitle:%+v\n", taskTitle)
 
 	curTsk, err := c.app.GetCurrentTask()
 	checkError(err, "Error occurred while current task request.", ctx)
@@ -116,20 +152,14 @@ func (c Controller) setHours(ctx *gin.Context) {
 
 	hoursBid, err := strconv.ParseInt(taskTitle, 10, 64)
 	if err != nil {
-		ctx.JSON(
-			http.StatusOK,
-			newMessage(fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s»)", taskTitle)),
-		)
+		c.respondMessage(ctx, fmt.Sprintf("Пожалуйста, укажите целое число! (вы ввели: «%s»)", taskTitle))
 		return
 	}
 
 	UserIdentity, _ := ctx.GetPostForm("user_id")
 	UserName, _ := ctx.GetPostForm("user_name")
 	if UserIdentity == "" || UserName == "" {
-		ctx.JSON(
-			http.StatusOK,
-			newMessage(fmt.Sprintf("Поле хранящее идентификатор пользователя или имя пользователя пусто.")),
-		)
+		c.respondMessage(ctx, fmt.Sprintf("Поле хранящее идентификатор пользователя или имя пользователя пусто."))
 		return
 	}
 
@@ -137,6 +167,8 @@ func (c Controller) setHours(ctx *gin.Context) {
 	checkError(err, "Error occurred when hours requested from db", ctx)
 
 	oldBid := taskHoursBidAndMember.MemberTimeBid
+
+	taskHoursBidAndMember.TaskID = curTsk.ID
 
 	taskHoursBidAndMember.MemberTimeBid = hoursBid
 	taskHoursBidAndMember.MemberIdentity = UserIdentity
@@ -146,33 +178,24 @@ func (c Controller) setHours(ctx *gin.Context) {
 	checkError(err, "При сохранении, в базу данных, часовой оценки пользователя, произошла ошибка", ctx)
 
 	if rowsAffected > 1 || rowsAffected == 0 {
-		ctx.JSON(
-			http.StatusOK,
-			newMessage(
-				fmt.Sprintf(
-					"При сохранении, в базу данных, часовой оценки пользователя, произошла неизвестная неполадка. Количество изменённых записей равно %+v.",
-					rowsAffected,
-				),
-			),
-		)
+		c.respondMessage(
+			ctx,
+			fmt.Sprintf(
+				"При сохранении, в базу данных, часовой оценки пользователя, произошла неизвестная неполадка. Количество изменённых записей равно %+v.",
+				rowsAffected,
+			))
 		return
 	}
 	if oldBid > 0 {
-		ctx.JSON(
-			http.StatusOK,
-			newMessage(fmt.Sprintf("Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", curTsk.Title, oldBid, hoursBid)),
-		)
+		c.respondMessage(ctx, fmt.Sprintf("Ваша оценка для задачи «%s» изменена с %v на %v\nСпасибо!", curTsk.Title, oldBid, hoursBid))
 		return
 	}
-	ctx.JSON(
-		http.StatusOK,
-		newMessage(fmt.Sprintf("Ваша оценка для задачи «%s» равная %v, записана.\nСпасибо!", curTsk.Title, hoursBid)),
-	)
+	c.respondMessage(ctx, fmt.Sprintf("Ваша оценка для задачи «%s» равная %v, записана.\nСпасибо!", curTsk.Title, hoursBid))
 }
 
 func (c Controller) setTask(ctx *gin.Context) {
 	taskTitle := ctx.Request.FormValue("text")
-	log.Println("taskTitle:", taskTitle)
+	logrus.Printf("taskTitle:%+v\n", taskTitle)
 
 	if taskTitle == "" {
 		ctx.JSON(http.StatusOK, newMessage("Please, specify «Task title».").
@@ -182,133 +205,121 @@ func (c Controller) setTask(ctx *gin.Context) {
 	task, err := c.app.GetTask(taskTitle)
 	checkError(err, fmt.Sprintf("При выборе задачи «%s» произошла ошибка:\n%+v", taskTitle, err), ctx)
 
-	log.Printf("First or create task result:\n%+v", task)
+	logrus.Printf("First or create task result:\n%+v\n", task)
 
 	if task.BiddingDone != 0 {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", taskTitle)))
+		c.respondMessage(ctx, fmt.Sprintf("Ставки времени для задачи «%s» уже сделаны! Голосование закрыто.", taskTitle))
 		return
 	}
 
 	err = c.app.SetTask(task.ID)
 	checkError(err, fmt.Sprintf("Error occurred on «%s» task set:\n%+v", taskTitle, err), ctx)
-	var url = "https://slack.com/api/chat.postMessage"
-	var msg = fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle)
 
-	//logrus.Println( string(jsonReqData) )
-
-	var jsonReqData = []byte(fmt.Sprintf(`{
-		"channel": "%s",
-		"text":  "%s"
-	}`,
+	resp, err := c.postChannelMessage(
+		fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle),
 		ctx.Request.FormValue("channel_id"),
-		msg,
-	))
-	logrus.Println( string(jsonReqData) )
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonReqData))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.slackOutToken))
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		panic(err)
-	}
-	defer resp.Body.Close()
-
-	fmt.Println("response Status:", resp.Status)
-	fmt.Println("response Headers:", resp.Header)
-	body, _ := ioutil.ReadAll(resp.Body)
-	fmt.Println("response Body:", string(body))
-
-	ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача «%s» выдвинута для совершения ставок оценки времени.", taskTitle)))
+		true,
+		"",
+	)
+	checkError(err, fmt.Sprintf("Error occurred on post message send on Slack:\n%+v", resp), ctx)
 	return
 
 }
 
+//TODO Make this command available only TeamLeader
 func (c Controller) listTaskHours(ctx *gin.Context) {
 	taskTitle := ctx.Request.FormValue("text")
-	log.Println("cmdText:", taskTitle)
+	logrus.Printf("cmdText:%+v\n", taskTitle)
 
 	if taskTitle == "" {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", ctx.Request.URL.Path)))
+		c.respondMessage(ctx, fmt.Sprintf("Укажите «Название задачи» например:\n«%s Название задачи».", "/tbb_listtaskhours"))
 		return
 	}
 	var task, err = c.app.GetTask(taskTitle)
-	checkError(err, "Произошла ошибка при обращении к базе данных", ctx)
+	checkError(err, "Error occurred on Getting the current task, on database request", ctx)
 
 	if task.ID == 0 {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача с точным названием «%s» не найдена.", taskTitle)))
+		c.respondMessage(ctx, fmt.Sprintf("Задача с точным названием «%s» не найдена.", taskTitle))
 		return
 	}
 	membersAndBids, err := c.app.GetTaskHoursBids(task.ID)
-	checkError(err, "Произошла ошибка при обращении к базе данных", ctx)
+	checkError(err, "Error occurred on Task hours getting, on database request", ctx)
 
 	if len(membersAndBids) > 0 {
 		var resultMembersAndBidsList string
 		for _, memberAndBid := range membersAndBids {
+			if len(resultMembersAndBidsList) > 0 {
+				resultMembersAndBidsList += "\n"
+			}
 			resultMembersAndBidsList += fmt.Sprintf(
-				"%v - %s (%s)",
+				"%v. %v - %s (%s)",
+				memberAndBid.ID,
 				memberAndBid.MemberTimeBid,
 				memberAndBid.MemberNick,
 				memberAndBid.MemberIdentity,
 			)
 			fmt.Println("memberAndBid:", memberAndBid)
 		}
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Для задачи «%s» участниками были сделаны следующие ставки:\n%s", taskTitle, resultMembersAndBidsList)))
+		c.respondMessage(ctx, fmt.Sprintf("Next hours votes was made by a members for the «%s» task:\n%s", taskTitle, resultMembersAndBidsList))
 		return
 	}
 
 	fmt.Println(task)
 
-	ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Ставок времени для задачи «%s» не сделано.", taskTitle)))
+	c.respondMessage(ctx, fmt.Sprintf("Ставок времени для задачи «%s» не сделано.", taskTitle))
 	return
 }
 
+//TODO Make this command available only TeamLeader
 func (c Controller) listAllTasks(ctx *gin.Context) {
-	// Unfound
 	tasks, err := c.app.GetAllTasks()
 	checkError(err, "При запросе всех задач в базу данных, произошла ошибка", ctx)
 
-	if len(tasks) > 0 {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Список задач пуст.")))
+	if len(tasks) == 0 {
+		c.respondMessage(ctx, fmt.Sprintf("Список задач пуст."))
 		return
 	}
-	var TaskBiddingDoneString string
+	var (
+		TaskBiddingDoneString string
+		msg                   string
+	)
 	for _, task := range tasks {
 		TaskBiddingDoneString = "открыто"
 		if task.BiddingDone > 0 {
 			TaskBiddingDoneString = "совершено"
 		}
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("%v. «%s» (голосование %s)", task.ID, task.Title, TaskBiddingDoneString)))
+		if len(msg) > 0 {
+			msg += "\n"
+		}
+		msg += fmt.Sprintf("%v. «%s» (голосование %s)", task.ID, task.Title, TaskBiddingDoneString)
 	}
+	c.respondMessage(ctx, msg)
 }
 
+//TODO Make this command available only TeamLeader
 func (c Controller) removeTask(ctx *gin.Context) {
 	taskTitle := ctx.Request.FormValue("text")
-	log.Println("taskTitle:", taskTitle)
-
-	/*curTsk, err := c.app.GetCurrentTask(); checkError(err, "При запросе текущей задачи произошла ошибка", ctx)*/
+	logrus.Printf("taskTitle:%+v", taskTitle)
 
 	if taskTitle == "" {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", ctx.Request.URL.Path)))
+		c.respondMessage(ctx, fmt.Sprintf("Укажите Название задачи например:\n«%s Название задачи».", ctx.Request.URL.Path))
 		return
 	}
-	// Unfound
 	task, err := c.app.GetTask(taskTitle)
 	checkError(err, fmt.Sprintf("При поиске задачи «%s» в базе данных произошла ошибка:\n%v", taskTitle, err), ctx)
 
 	if task.ID == 0 {
-		ctx.JSON(http.StatusOK, newMessage(fmt.Sprintf("Задача «%s» не найдена.", taskTitle)))
+		c.respondMessage(ctx, fmt.Sprintf("Задача «%s» не найдена.", taskTitle))
 		return
 	}
 
 	childRowsAffected, err := c.app.RemoveTaskByIdAndChildHours(task.ID)
 	checkError(err, fmt.Sprintf("При удалении задачи «%s» из базы данных произошла ошибка:\n%v", taskTitle, err), ctx)
 
-	response := newMessage(fmt.Sprintf("Задача «%s» удалена.", taskTitle))
+	response := types.NewPostChannelMessage(fmt.Sprintf("Задача «%s» удалена.", taskTitle), ctx.Request.FormValue("channel_id"), true, "", c.slackOutToken)
 
 	if childRowsAffected > 0 {
-		response.AddAttachment("Так же удалены все связанные с ней ставки участников.")
+		response.AddAttachment("Так же удалены все связанные с ней ставки участников.", "")
 	}
 	currentTask, err := c.app.GetCurrentTask()
 	if err != nil {
@@ -320,8 +331,9 @@ func (c Controller) removeTask(ctx *gin.Context) {
 			c.respondMessage(ctx, "При выполнении запроса в базу данных для обнуления текущей задачи, произошла ошибка")
 			return
 		}
-		response.AddAttachment(fmt.Sprintf("Задача «%s» так же снята с голосования.", taskTitle))
+		response.AddAttachment(fmt.Sprintf("Задача «%s» так же снята с голосования.", taskTitle), "")
 	}
 
-	ctx.JSON(http.StatusOK, response)
+	resp, err := c.sendPOSTMessage(response)
+	checkError(err, fmt.Sprintf("Error occurred on post message send on Slack:\n%+v", resp), ctx)
 }

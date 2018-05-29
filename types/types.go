@@ -25,6 +25,38 @@ func NewMessage(text string) *Message {
 	}
 }
 
+// Attachment
+type PostChannelMessageAttachment struct {
+	Text    string `json:"text"`
+	PreText string `json:"pre-text" json:"text"`
+}
+type PostChannelMessage struct {
+	Token       string                         `json:"text"`
+	Channel     string                         `json:"text"`
+	AsUser      bool                           `json:"as_user" json:"text"`
+	Text        string                         `json:"text"`
+	Username    string                         `json:"text"`
+	Attachments []PostChannelMessageAttachment `json:"attachments"`
+}
+
+// AddAttachment
+func (pm *PostChannelMessage) AddAttachment(text string, preText string) *PostChannelMessage {
+	pm.Attachments = append(pm.Attachments, PostChannelMessageAttachment{Text: text, PreText: preText})
+	return pm
+}
+
+// NewMessage
+func NewPostChannelMessage(text string, channel string, asUser bool, username string, token string) *PostChannelMessage {
+	return &PostChannelMessage{
+		Channel:     channel,
+		Text:        text,
+		AsUser:      asUser,
+		Username:	 username,
+		Token:       token,
+		Attachments: make([]PostChannelMessageAttachment, 0),
+	}
+}
+
 // Task
 type Task struct {
 	ID          int `gorm:"primary_key:yes"`

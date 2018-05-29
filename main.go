@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
 	"runtime"
 
 	"github.com/jinzhu/gorm"
@@ -58,11 +57,7 @@ func main() {
 
 	c.InitRouters()
 
-	httpPort := 80
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	fmt.Printf("listening on %v\n", httpPort)
-	//TODO May be we have to use another way of c.Gin accessing? Probably that can be wrong when you make c.Gin variable globally accessible.
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", httpPort), c.Gin))
+	c.Serve()
 }
 func openDB(dialect string, config config.Config) (*gorm.DB, error) {
 	var dsn = fmt.Sprintf(

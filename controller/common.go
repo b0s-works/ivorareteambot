@@ -1,9 +1,9 @@
 package controller
 
 import (
-	"ivorareteambot/types"
-
 	"net/http"
+
+	"ivorareteambot/types"
 
 	"github.com/gin-gonic/gin"
 )
